@@ -78,25 +78,40 @@ def get_rembg_session():
     return new_session("isnet-general-use")
 
 def remove_background_smart(image: Image.Image, hf_tok: str) -> Image.Image:
-    # 1. Tách nền trực tiếp trên máy bằng rembg (ISNet)
+    # 1. Ưu tiên tách nền trực tiếp trên máy bằng rembg (ISNet chuyên cho đồ họa POD)
     if HAS_REMBG:
         session = get_rembg_session()
         return rembg_remove(image, session=session)
         
-    # 2. Nếu chưa cài rembg thì gọi qua Cloud (đã bỏ hoàn toàn tham số hf_token)
+    # 2. Nếu gọi qua Cloud: Tự động thử các Server tách nền mạnh nhất mà không phụ thuộc api_name
     if hf_tok:
         os.environ["HF_TOKEN"] = hf_tok.strip()
+        
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
         image.save(tmp.name)
         tmp_path = tmp.name
+        
     try:
-        client = Client("ZhengPeng7/BiRefNet_demo")
-        result = client.predict(
-            image=handle_file(tmp_path),
-            api_name="/predict"
-        )
-        out_path = result[-1] if isinstance(result, (list, tuple)) else result
-        return Image.open(out_path).convert("RGBA")
+        # Danh sách các Space tách nền tốt nhất hiện nay trên Hugging Face
+        spaces = [
+            "briaai/BRIA-RMBG-1.4",
+            "ZhengPeng7/BiRefNet_demo",
+            "KenjieDec/RemBG"
+        ]
+        last_err = None
+        for space_id in spaces:
+            try:
+                client = Client(space_id)
+                # Dùng fn_index=0 để tự động gọi hàm đầu tiên mà không sợ sai api_name="/predict"
+                result = client.predict(handle_file(tmp_path), fn_index=0)
+                out_path = result[-1] if isinstance(result, (list, tuple)) else result
+                if isinstance(out_path, dict) and "path" in out_path:
+                    out_path = out_path["path"]
+                return Image.open(out_path).convert("RGBA")
+            except Exception as e:
+                last_err = e
+                continue
+        raise Exception(f"Tất cả server Cloud đều bận ({last_err}). Hãy chạy lệnh: python -m pip install \"rembg[cpu]\" trong CMD!")
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)

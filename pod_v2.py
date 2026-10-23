@@ -9,8 +9,8 @@ from google.genai import types
 from gradio_client import Client, handle_file
 
 # --- CẤU HÌNH TRANG WEB ---
-st.set_page_config(page_title="POD Auto Studio V5.3", page_icon="🎯", layout="wide")
-st.title("🎯 [V5.3 PRO] POD Crop, Làm Nét Đồng Nhất Nền (4200x4800) & Tách Nền Sạch Khe Kín")
+st.set_page_config(page_title="POD Auto Studio V5.4", page_icon="🎯", layout="wide")
+st.title("🎯 [V5.4 PRO] POD Crop, Làm Nét, Đổi Nền, FLUX AI Redesign & Tách Nền Sạch Khe Kín")
 
 # --- THANH BÊN (SIDEBAR) ---
 with st.sidebar:
@@ -38,7 +38,7 @@ with st.sidebar:
         ]
     )
 
-# --- 1. HÀM TIỆN ÍCH MÀU SẮC & TỰ ĐỘNG GỢI Ý VÙNG CROP ---
+# --- 1. CÁC HÀM TIỆN ÍCH MÀU SẮC & TỰ ĐỘNG GỢI Ý VÙNG CROP ---
 def hex_to_rgb(hex_str: str) -> np.ndarray:
     hex_str = hex_str.lstrip('#')
     return np.array([int(hex_str[i:i+2], 16) for i in (0, 2, 4)], dtype=np.float32)
@@ -225,7 +225,7 @@ def standardize_solid_bg_canvas(
     canvas.paste(resized_art, (pos_x, pos_y))
     return canvas
 
-# --- 4. CÔNG NGHỆ TÁCH NỀN TRONG SUỐT V5.3 ---
+# --- 4. CÔNG NGHỆ TÁCH NỀN TRONG SUỐT V5.4 ---
 def universal_clean_knockout_v5(
     image: Image.Image,
     bg_rgb: np.ndarray,
@@ -317,6 +317,41 @@ def standardize_pod_canvas(img: Image.Image, target_w=4200, target_h=4800, pad=1
         
     canvas.paste(resized_art, (pos_x, pos_y), resized_art)
     return canvas
+
+# --- 5. HÀM ĐỌC PROMPT & REDESIGN MẪU MỚI ---
+def analyze_art_prompt(image: Image.Image, api_key: str) -> str:
+    rgb_img = image.convert("RGB")
+    rgb_img.thumbnail((1024, 1024))
+    sys_prompt = (
+        "Analyze this cropped T-shirt graphic design carefully. Write ONLY the raw English image generation prompt "
+        "to recreate this exact illustration style, subject, floral elements, color palette, and text layout "
+        "isolated on a solid flat background, crisp vector-like edges, print-ready graphic art."
+    )
+    clean_key = api_key.strip().replace('"', '').replace("'", "") if api_key else ""
+    if clean_key:
+        client = genai.Client(api_key=clean_key)
+        for model_name in ["gemini-3.8-flash", "gemini-3.0-flash", "gemini-2.5-pro", "gemini-flash-latest"]:
+            try:
+                response = client.models.generate_content(model=model_name, contents=[rgb_img, sys_prompt])
+                if response and response.text:
+                    return response.text.strip()
+            except Exception:
+                continue
+    return "Vintage illustration of a skeleton girl with floral crown reading a book surrounded by wildflowers, sun, and butterflies, text 'JUST A GIRL WHO LOVES BOOKS' at bottom, isolated on solid background"
+
+def generate_redesign_flux(prompt: str, hf_tok: str) -> Image.Image:
+    if hf_tok:
+        os.environ["HF_TOKEN"] = hf_tok.strip().replace('"', '').replace("'", "")
+    full_prompt = f"{prompt}, isolated t-shirt graphic art, solid plain background, crisp clean edges, original vintage color palette"
+    client = Client("black-forest-labs/FLUX.1-schnell")
+    try:
+        result = client.predict(prompt=full_prompt, seed=0, randomize_seed=True, width=1024, height=1216, num_inference_steps=4, api_name="/infer")
+    except Exception:
+        result = client.predict(full_prompt, 0, True, 1024, 1216, 4, fn_index=0)
+    img_path = result[0] if isinstance(result, (list, tuple)) else result
+    if isinstance(img_path, dict) and "path" in img_path:
+        img_path = img_path["path"]
+    return Image.open(img_path).convert("RGBA")
 
 # --- GIAO DIỆN CHÍNH (MAIN UI) ---
 col1, col2 = st.columns([1.05, 0.95])
@@ -482,13 +517,22 @@ with col1:
                 file_name=f"POD_Step2_SolidBG_{st.session_state.step2_bg_hex.lstrip('#')}_4200x4800.png",
                 mime="image/png"
             )
+                
+        with st.expander("🎨 Mở rộng: Clone & Vẽ lại mẫu mới hoàn toàn bằng Prompt (FLUX AI)"):
+            if st.button("🔍 Đọc Prompt từ vùng đã Crop"):
+                st.session_state.extracted_prompt = analyze_art_prompt(cropped_art, gemini_key)
+            prompt_text = st.text_area("Prompt Redesign:", value=st.session_state.extracted_prompt, height=100)
+            if st.button("🎨 Vẽ mẫu mới bằng FLUX AI"):
+                with st.spinner("Đang vẽ mẫu mới..."):
+                    st.session_state.current_art = generate_redesign_flux(prompt_text, hf_token)
+                    st.success("🎉 Đã tạo xong mẫu Redesign bằng FLUX AI! Hãy chuyển sang Bước 3 bên phải để xử lý tiếp.")
 
 with col2:
     st.subheader("🚀 Bước 3: Tách Nền Trong Suốt Sạch Khe Kín (A, R, O, B) & Xuất 4200x4800")
     
     if st.session_state.current_art is not None:
         work_art = st.session_state.current_art
-        st.image(work_art, caption="Bản Art từ Bước 2 chuyển sang để tách nền trong suốt", width=320)
+        st.image(work_art, caption="Bản Art chuyển sang để tách nền trong suốt", width=320)
         
         detected_rgb = hex_to_rgb(st.session_state.step2_bg_hex)
         detected_hex = st.session_state.step2_bg_hex

@@ -78,12 +78,12 @@ def get_rembg_session():
     return new_session("isnet-general-use")
 
 def remove_background_smart(image: Image.Image, hf_tok: str) -> Image.Image:
-    # 1. Ưu tiên tách nền trực tiếp trên máy bằng rembg (ISNet chuyên cho đồ họa POD)
+    # 1. Nếu máy đã cài rembg thì chạy trực tiếp
     if HAS_REMBG:
         session = get_rembg_session()
         return rembg_remove(image, session=session)
         
-    # 2. Nếu gọi qua Cloud: Tự động thử các Server tách nền mạnh nhất mà không phụ thuộc api_name
+    # 2. Gọi qua Cloud KenjieDec/RemBG với đúng bộ tham số (Ảnh + Tên Model BiRefNet)
     if hf_tok:
         os.environ["HF_TOKEN"] = hf_tok.strip()
         
@@ -92,30 +92,32 @@ def remove_background_smart(image: Image.Image, hf_tok: str) -> Image.Image:
         tmp_path = tmp.name
         
     try:
-        # Danh sách các Space tách nền tốt nhất hiện nay trên Hugging Face
-        spaces = [
-            "briaai/BRIA-RMBG-1.4",
-            "ZhengPeng7/BiRefNet_demo",
-            "KenjieDec/RemBG"
-        ]
-        last_err = None
-        for space_id in spaces:
-            try:
-                client = Client(space_id)
-                # Dùng fn_index=0 để tự động gọi hàm đầu tiên mà không sợ sai api_name="/predict"
-                result = client.predict(handle_file(tmp_path), fn_index=0)
-                out_path = result[-1] if isinstance(result, (list, tuple)) else result
-                if isinstance(out_path, dict) and "path" in out_path:
-                    out_path = out_path["path"]
-                return Image.open(out_path).convert("RGBA")
-            except Exception as e:
-                last_err = e
-                continue
-        raise Exception(f"Tất cả server Cloud đều bận ({last_err}). Hãy chạy lệnh: python -m pip install \"rembg[cpu]\" trong CMD!")
+        client = Client("KenjieDec/RemBG")
+        # Truyền chính xác: File ảnh + Model 'birefnet-general' (Model nét nhất trong danh sách báo lỗi)
+        result = client.predict(
+            handle_file(tmp_path),
+            "birefnet-general",
+            api_name="/inference"
+        )
+        out_path = result[0] if isinstance(result, (list, tuple)) else result
+        if isinstance(out_path, dict) and "path" in out_path:
+            out_path = out_path["path"]
+        return Image.open(out_path).convert("RGBA")
+    except Exception:
+        # Dự phòng nếu api_name khác thì gọi qua fn_index=0 với đủ 2 tham số
+        client = Client("KenjieDec/RemBG")
+        result = client.predict(
+            handle_file(tmp_path),
+            "birefnet-general",
+            fn_index=0
+        )
+        out_path = result[0] if isinstance(result, (list, tuple)) else result
+        if isinstance(out_path, dict) and "path" in out_path:
+            out_path = out_path["path"]
+        return Image.open(out_path).convert("RGBA")
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
-
 def standardize_pod_canvas(img: Image.Image, target_w=4200, target_h=4800, pad=150, top_chest=True) -> Image.Image:
     img = img.convert("RGBA")
     alpha = img.split()[3]

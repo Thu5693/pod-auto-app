@@ -38,7 +38,7 @@ with st.sidebar:
         ]
     )
 
-# --- 1. CÁC HÀM TIỆN ÍCH MÀU SẮC & TỰ ĐỘNG GỢI Ý VÙNG CROP ---
+# --- 1. HÀM TIỆN ÍCH MÀU SẮC & TỰ ĐỘNG GỢI Ý VÙNG CROP ---
 def hex_to_rgb(hex_str: str) -> np.ndarray:
     hex_str = hex_str.lstrip('#')
     return np.array([int(hex_str[i:i+2], 16) for i in (0, 2, 4)], dtype=np.float32)
@@ -75,36 +75,28 @@ def auto_detect_art_box(img: Image.Image):
         )
     return (24, 76, 18, 82)
 
-# --- 2. HÀM ĐỒNG NHẤT MÀU NỀN & LÀM NÉT CHUẨN (GIỮ NGUYÊN 100% ART GỐC) ---
+# --- 2. HÀM ĐỒNG NHẤT MÀU NỀN & LÀM NÉT CHUẨN ---
 def unify_background_solid_color(
     image: Image.Image, 
     target_bg_rgb: np.ndarray, 
     bg_tolerance: int = 38
 ) -> Image.Image:
-    """
-    Chuyển toàn bộ phần nền vải áo (có thể bị loang màu, nhăn hoặc khác màu)
-    về ĐỒNG NHẤT 1 MÀU DUY NHẤT (target_bg_rgb), đồng thời giữ nguyên 100% chi tiết và màu sắc của Art.
-    """
     rgb_arr = np.array(image.convert("RGB"), dtype=np.float32)
     orig_bg_rgb = detect_dominant_bg_color(rgb_arr)
     
-    # Tính khoảng cách màu từ từng điểm ảnh tới màu nền gốc của áo
     dr = rgb_arr[:, :, 0] - orig_bg_rgb[0]
     dg = rgb_arr[:, :, 1] - orig_bg_rgb[1]
     db = rgb_arr[:, :, 2] - orig_bg_rgb[2]
     r_mean = (rgb_arr[:, :, 0] + orig_bg_rgb[0]) / 2.0
     color_dist = np.sqrt((2.0 + r_mean / 256.0) * (dr**2) + 4.0 * (dg**2) + (2.0 + (255.0 - r_mean) / 256.0) * (db**2)) / np.sqrt(8.0)
     
-    # Tạo mặt nạ phân tách Nền (0.0) và Art (1.0) với vùng chuyển tiếp mượt
     feather = 18.0
     art_mask = np.clip((color_dist - bg_tolerance) / feather, 0.0, 1.0)
     
-    # Làm mịn mặt nạ để viền tiếp giáp giữa Art và màu nền mới mượt mà
     mask_pil = Image.fromarray((art_mask * 255.0).astype(np.uint8), mode="L")
     mask_pil = mask_pil.filter(ImageFilter.GaussianBlur(radius=0.8))
     smooth_mask = (np.array(mask_pil, dtype=np.float32) / 255.0)[:, :, np.newaxis]
     
-    # Khử màu nền cũ bám ở rìa Art trước khi đặt lên màu nền mới
     safe_mask = np.maximum(smooth_mask, 0.22)
     orig_bg_3d = orig_bg_rgb.reshape((1, 1, 3))
     target_bg_3d = target_bg_rgb.reshape((1, 1, 3))
@@ -113,7 +105,6 @@ def unify_background_solid_color(
     is_edge = (smooth_mask > 0.02) & (smooth_mask < 0.95)
     clean_fg = np.where(is_edge, decontaminated_art, rgb_arr)
     
-    # Hòa trộn Art sạch lên tấm nền đồng nhất 100% (target_bg_3d)
     unified_rgb = clean_fg * smooth_mask + target_bg_3d * (1.0 - smooth_mask)
     return Image.fromarray(np.clip(unified_rgb, 0, 255).astype(np.uint8), mode="RGB").convert("RGBA")
 
@@ -125,16 +116,12 @@ def remaster_and_unify_art(
     bg_tolerance: int = 38,
     custom_edit: str = ""
 ) -> Image.Image:
-    """
-    Làm nét 4K giữ nguyên Art gốc + Đưa nền về đồng nhất 1 màu người dùng chọn.
-    """
     rgb_img = cropped_img.convert("RGB")
     target_hex = rgb_to_hex(target_bg_rgb)
     clean_key = api_key.strip().replace('"', '').replace("'", "") if api_key else ""
     
     enhanced_img = None
     
-    # 1. Thử làm nét & đồng nhất nền qua Gemini Image Generation
     if clean_key:
         client = genai.Client(api_key=clean_key)
         edit_instruction = f" Also apply this specific adjustment: {custom_edit}." if custom_edit.strip() else " Keep the exact same typography and font."
@@ -158,14 +145,12 @@ def remaster_and_unify_art(
                 for part in response.candidates[0].content.parts:
                     if part.inline_data is not None:
                         enhanced_img = Image.open(io.BytesIO(part.inline_data.data)).convert("RGBA")
-                        st.success(f"✨ Đã tái tạo Art siêu nét & đồng nhất nền bằng AI ({m_name})!")
                         break
                 if enhanced_img is not None:
                     break
             except Exception:
                 continue
 
-    # 2. Nếu chưa qua Gemini Image, gọi GPU Upscaler Real-ESRGAN để tăng nét 4K giữ nguyên 100% chi tiết gốc
     if enhanced_img is None:
         if hf_tok:
             os.environ["HF_TOKEN"] = hf_tok.strip().replace('"', '').replace("'", "")
@@ -181,7 +166,6 @@ def remaster_and_unify_art(
                     if isinstance(out_p, dict) and "path" in out_p:
                         out_p = out_p["path"]
                     enhanced_img = Image.open(out_p).convert("RGBA")
-                    st.success(f"✨ Đã Upscale 4K giữ nguyên 100% màu & chi tiết gốc qua GPU {sp}!")
                     break
                 except Exception:
                     continue
@@ -189,18 +173,16 @@ def remaster_and_unify_art(
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
-    # 3. Dự phòng LANCZOS Ultra Crisp nếu server Cloud bận
     if enhanced_img is None:
         w, h = rgb_img.size
         scale = max(1, 2000 // max(w, h))
         up_img = rgb_img.resize((w * scale, h * scale), Image.Resampling.LANCZOS)
         enhanced_img = up_img.filter(ImageFilter.UnsharpMask(radius=1.2, percent=115, threshold=4)).convert("RGBA")
 
-    # 4. Ép phẳng nền về ĐÚNG 1 MÀU ĐỒNG NHẤT TUYỆT ĐỐI (target_bg_rgb) để không còn vết vải loang hay lệch mã màu
     final_step2_img = unify_background_solid_color(enhanced_img, target_bg_rgb, bg_tolerance=bg_tolerance)
     return final_step2_img
 
-# --- 3. HÀM CHUẨN HÓA KHUNG 4200x4800 CÓ MÀU NỀN ĐỒNG NHẤT (DÀNH CHO BƯỚC 2) ---
+# --- 3. HÀM CHUẨN HÓA KHUNG 4200x4800 CÓ NỀN ĐỒNG NHẤT ---
 def standardize_solid_bg_canvas(
     img: Image.Image, 
     bg_rgb: np.ndarray, 
@@ -210,11 +192,7 @@ def standardize_solid_bg_canvas(
     top_chest=True,
     tol=35
 ) -> Image.Image:
-    """
-    Đặt bức ảnh Bước 2 vào đúng chuẩn khung in 4200x4800px trên tấm nền đồng nhất 100% (Chưa tách nền trong suốt).
-    """
     rgb_arr = np.array(img.convert("RGB"), dtype=np.float32)
-    # Tìm khung giới hạn thực sự của Art trên nền màu đồng nhất để căn giữa chuẩn xác
     diff = np.sqrt(np.sum((rgb_arr - bg_rgb.reshape((1, 1, 3))) ** 2, axis=2))
     coords = np.argwhere(diff > tol)
     if len(coords) > 50:
@@ -247,7 +225,7 @@ def standardize_solid_bg_canvas(
     canvas.paste(resized_art, (pos_x, pos_y))
     return canvas
 
-# --- 4. CÔNG NGHỆ TÁCH NỀN TRONG SUỐT V5.3 (DÀNH CHO BƯỚC 3) ---
+# --- 4. CÔNG NGHỆ TÁCH NỀN TRONG SUỐT V5.3 ---
 def universal_clean_knockout_v5(
     image: Image.Image,
     bg_rgb: np.ndarray,
@@ -340,41 +318,6 @@ def standardize_pod_canvas(img: Image.Image, target_w=4200, target_h=4800, pad=1
     canvas.paste(resized_art, (pos_x, pos_y), resized_art)
     return canvas
 
-# --- 5. HÀM ĐỌC PROMPT & REDESIGN MẪU MỚI ---
-def analyze_art_prompt(image: Image.Image, api_key: str) -> str:
-    rgb_img = image.convert("RGB")
-    rgb_img.thumbnail((1024, 1024))
-    sys_prompt = (
-        "Analyze this cropped T-shirt graphic design carefully. Write ONLY the raw English image generation prompt "
-        "to recreate this exact illustration style, subject, floral elements, color palette, and text layout "
-        "isolated on a solid flat background, crisp vector-like edges, print-ready graphic art."
-    )
-    clean_key = api_key.strip().replace('"', '').replace("'", "") if api_key else ""
-    if clean_key:
-        client = genai.Client(api_key=clean_key)
-        for model_name in ["gemini-3.8-flash", "gemini-3.0-flash", "gemini-2.5-pro", "gemini-flash-latest"]:
-            try:
-                response = client.models.generate_content(model=model_name, contents=[rgb_img, sys_prompt])
-                if response and response.text:
-                    return response.text.strip()
-            except Exception:
-                continue
-    return "Vintage illustration of a skeleton girl with floral crown reading a book surrounded by wildflowers, sun, and butterflies, text 'JUST A GIRL WHO LOVES BOOKS' at bottom, isolated on solid background"
-
-def generate_redesign_flux(prompt: str, hf_tok: str) -> Image.Image:
-    if hf_tok:
-        os.environ["HF_TOKEN"] = hf_tok.strip().replace('"', '').replace("'", "")
-    full_prompt = f"{prompt}, isolated t-shirt graphic art, solid plain background, crisp clean edges, original vintage color palette"
-    client = Client("black-forest-labs/FLUX.1-schnell")
-    try:
-        result = client.predict(prompt=full_prompt, seed=0, randomize_seed=True, width=1024, height=1216, num_inference_steps=4, api_name="/infer")
-    except Exception:
-        result = client.predict(full_prompt, 0, True, 1024, 1216, 4, fn_index=0)
-    img_path = result[0] if isinstance(result, (list, tuple)) else result
-    if isinstance(img_path, dict) and "path" in img_path:
-        img_path = img_path["path"]
-    return Image.open(img_path).convert("RGBA")
-
 # --- GIAO DIỆN CHÍNH (MAIN UI) ---
 col1, col2 = st.columns([1.05, 0.95])
 
@@ -437,7 +380,6 @@ with col1:
         st.divider()
         st.subheader("✨ Bước 2: Làm nét, Đồng nhất màu nền & Xuất ảnh 4200x4800 (Chưa tách nền)")
         
-        # Phát hiện màu nền gốc của vùng vừa Crop
         orig_crop_bg = detect_dominant_bg_color(np.array(cropped_art.convert("RGB"), dtype=np.float32))
         orig_crop_hex = rgb_to_hex(orig_crop_bg)
         
@@ -494,7 +436,6 @@ with col1:
                     st.session_state.current_art = remastered
                     st.session_state.step2_bg_hex = chosen_step2_hex
                     
-                    # Chuẩn hóa luôn bản 4200x4800px CÓ NỀN ĐỒNG NHẤT cho Bước 2
                     is_top_chest = "ngực áo" in align_mode
                     solid_4200 = standardize_solid_bg_canvas(
                         remastered, step2_bg_rgb, 
@@ -528,5 +469,101 @@ with col1:
                     prev_s2.thumbnail((700, 800))
                     st.session_state.step2_preview_img = prev_s2
 
-        # HIỂN THỊ KẾT QUẢ & NÚT TẢI FILE 4200x4800 CHƯA TÁCH NỀN NGAY TẠI BƯỚC 2
-        if st.session_state.step2_solid_4200_bytes is not None and st.session_state.step2_preview_img is
+        if st.session_state.step2_solid_4200_bytes is not None and st.session_state.step2_preview_img is not None:
+            st.success(f"✅ Hoàn tất Bước 2! Ảnh đã được làm nét và đưa về nền đồng nhất ({st.session_state.step2_bg_hex}) chuẩn {CANVAS_W}x{CANVAS_H} px!")
+            st.image(
+                st.session_state.step2_preview_img, 
+                caption=f"Kết quả Bước 2: Chưa tách nền - Nền đồng nhất {st.session_state.step2_bg_hex} ({CANVAS_W}x{CANVAS_H} px)", 
+                use_container_width=True
+            )
+            st.download_button(
+                label=f"📥 TẢI FILE BƯỚC 2 - CÓ NỀN ĐỒNG NHẤT {st.session_state.step2_bg_hex} ({CANVAS_W}x{CANVAS_H} - 300 DPI)",
+                data=st.session_state.step2_solid_4200_bytes,
+                file_name=f"POD_Step2_SolidBG_{st.session_state.step2_bg_hex.lstrip('#')}_4200x4800.png",
+                mime="image/png"
+            )
+
+with col2:
+    st.subheader("🚀 Bước 3: Tách Nền Trong Suốt Sạch Khe Kín (A, R, O, B) & Xuất 4200x4800")
+    
+    if st.session_state.current_art is not None:
+        work_art = st.session_state.current_art
+        st.image(work_art, caption="Bản Art từ Bước 2 chuyển sang để tách nền trong suốt", width=320)
+        
+        detected_rgb = hex_to_rgb(st.session_state.step2_bg_hex)
+        detected_hex = st.session_state.step2_bg_hex
+        
+        st.markdown("##### 🎨 1. Màu nền cần tách sang trong suốt")
+        bg_col1, bg_col2 = st.columns([2, 1])
+        with bg_col1:
+            bg_detect_mode = st.radio(
+                "Chế độ nhận diện màu nền Bước 3:",
+                [
+                    f"🤖 Tự động nhận diện nền đồng nhất từ Bước 2 ({detected_hex})",
+                    "🎯 Tự chấm/chọn màu nền thủ công"
+                ]
+            )
+        with bg_col2:
+            picked_hex = st.color_picker("Màu nền sẽ xóa:", value=detected_hex)
+            
+        target_bg_rgb = detected_rgb if "Tự động" in bg_detect_mode else hex_to_rgb(picked_hex)
+
+        st.markdown("##### 🎛️ 2. Tinh chỉnh độ sâu đục khe kín (A, R, O, B) & độ mượt đường nét:")
+        s_col1, s_col2, s_col3 = st.columns(3)
+        with s_col1:
+            thresh_val = st.slider("Độ nhạy bóc nền & đục khe:", 15, 90, 42)
+        with s_col2:
+            choke_val = st.slider("Gọt viền (Choke px):", 0, 5, 2)
+        with s_col3:
+            smooth_val = st.slider("Độ mượt đường nét:", 0.0, 3.0, 1.4, step=0.2)
+            
+        preview_bg = st.radio(
+            "🔍 Màu nền kiểm tra kết quả Bước 3 (File tải về luôn là PNG Trong Suốt):", 
+            ["Nền Trắng (Kiểm tra nền tối)", "Nền Đen (Kiểm tra nền sáng)", "Nền Xanh Dương (Kiểm tra mọi loại viền)"],
+            horizontal=True
+        )
+        
+        if st.button("⚡ XỬ LÝ TÁCH NỀN TRONG SUỐT & XUẤT FILE 4200x4800 PX", type="primary"):
+            with st.spinner("Đang tách nền trong suốt, đục sạch bụng chữ A, R, O, B, các khe lá và làm mượt đường nét..."):
+                transparent_art = universal_clean_knockout_v5(
+                    work_art, target_bg_rgb, 
+                    tolerance=thresh_val, edge_choke_px=choke_val, smooth_radius=smooth_val
+                )
+                
+            with st.spinner("Đang căn chỉnh chuẩn xác vào khung trong suốt 4200x4800 (300 DPI)..."):
+                is_top_chest = "ngực áo" in align_mode
+                final_pod_img = standardize_pod_canvas(
+                    transparent_art, 
+                    target_w=CANVAS_W, 
+                    target_h=CANVAS_H, 
+                    pad=margin, 
+                    top_chest=is_top_chest
+                )
+                
+                buf = io.BytesIO()
+                final_pod_img.save(buf, format="PNG", dpi=(300, 300))
+                byte_im = buf.getvalue()
+                
+            st.success(f"✅ Hoàn tất Bước 3! File PNG Trong Suốt đạt chuẩn {CANVAS_W}x{CANVAS_H} px (300 DPI)!")
+            
+            preview_small = final_pod_img.copy()
+            preview_small.thumbnail((800, 914))
+            
+            if "Nền Trắng" in preview_bg:
+                bg_prev_img = Image.new("RGBA", preview_small.size, (255, 255, 255, 255))
+            elif "Nền Đen" in preview_bg:
+                bg_prev_img = Image.new("RGBA", preview_small.size, (15, 15, 15, 255))
+            else:
+                bg_prev_img = Image.new("RGBA", preview_small.size, (0, 120, 215, 255))
+                
+            bg_prev_img.paste(preview_small, (0, 0), preview_small)
+            st.image(bg_prev_img, caption=f"Kiểm tra kết quả Bước 3 trên {preview_bg} (File tải về bên dưới là PNG Trong Suốt 4200x4800px)", use_container_width=True)
+            
+            st.download_button(
+                label="📥 TẢI FILE BƯỚC 3 - PNG TRONG SUỐT ĐÃ TÁCH NỀN (4200x4800 - 300 DPI)",
+                data=byte_im,
+                file_name="POD_Step3_Transparent_4200x4800.png",
+                mime="image/png"
+            )
+    else:
+        st.info("👈 Hãy thực hiện Bước 1 & Bước 2 ở Cột bên trái trước, ảnh đã đồng nhất nền sẽ tự động chuyển sang Bước 3 tại đây!")

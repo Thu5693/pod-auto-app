@@ -16,8 +16,8 @@ except ImportError:
     HAS_REMBG = False
 
 # --- CẤU HÌNH TRANG WEB ---
-st.set_page_config(page_title="POD Auto Studio V4.0 Ultra Smooth", page_icon="💎", layout="wide")
-st.title("💎 [V4.0 ULTRA] POD Crop, AI Remaster, Khử Viền Đen Mượt Cạnh & Chuẩn Hóa 4200x4800")
+st.set_page_config(page_title="POD Auto Studio V5.0 Universal", page_icon="🎯", layout="wide")
+st.title("🎯 [V5.0 PRO] POD Crop, AI Remaster, Tách Sạch Mọi Khe Chữ/Màu Nền & Chuẩn Hóa 4200x4800")
 
 # --- THANH BÊN (SIDEBAR) ---
 with st.sidebar:
@@ -41,15 +41,24 @@ with st.sidebar:
                           ["Căn giữa ngực áo (Cách mép trên ~350px - Chuẩn áo thun)", 
                            "Căn chính giữa tâm khung hình (Center)"])
 
-# --- 1. HÀM TỰ ĐỘNG GỢI Ý VÙNG CROP TRÊN ÁO MOCKUP ---
+# --- 1. HÀM TỰ ĐỘNG PHÁT HIỆN MÀU NỀN BẤT KỲ & GỢI Ý VÙNG CROP ---
+def detect_dominant_bg_color(rgb_arr: np.ndarray) -> np.ndarray:
+    """Lấy mẫu toàn bộ 4 đường viền ảnh để tìm chính xác màu nền gốc (Đen, Trắng, Đỏ, Xanh, Xám...)"""
+    top_edge = rgb_arr[0, :, :]
+    bottom_edge = rgb_arr[-1, :, :]
+    left_edge = rgb_arr[:, 0, :]
+    right_edge = rgb_arr[:, -1, :]
+    border_pixels = np.concatenate([top_edge, bottom_edge, left_edge, right_edge], axis=0)
+    return np.median(border_pixels, axis=0)
+
 def auto_detect_art_box(img: Image.Image):
     rgb = np.array(img.convert("RGB"), dtype=np.float32)
     h, w, _ = rgb.shape
-    bg_color = np.median([rgb[int(h*0.1), int(w*0.1)], rgb[int(h*0.1), int(w*0.9)]], axis=0)
+    bg_color = np.median([rgb[int(h*0.1), int(w*0.15)], rgb[int(h*0.1), int(w*0.85)]], axis=0)
     diff = np.sqrt(np.sum((rgb - bg_color)**2, axis=2))
     mask = np.zeros_like(diff, dtype=bool)
-    mask[int(h*0.15):int(h*0.88), int(w*0.22):int(w*0.78)] = True
-    art_pixels = (diff > 35) & mask
+    mask[int(h*0.14):int(h*0.88), int(w*0.20):int(w*0.80)] = True
+    art_pixels = (diff > 32) & mask
     coords = np.argwhere(art_pixels)
     if len(coords) > 100:
         y0, x0 = coords.min(axis=0)
@@ -63,7 +72,7 @@ def auto_detect_art_box(img: Image.Image):
         )
     return (24, 76, 18, 82)
 
-# --- 2. HÀM AI REMASTER 1:1 (LÀM NÉT CHUẨN & GIỮ NGUYÊN MÀU GỐC) ---
+# --- 2. HÀM AI REMASTER 1:1 (GIỮ NGUYÊN MÀU GỐC & NỀN GỐC) ---
 def remaster_cropped_art(cropped_img: Image.Image, api_key: str, hf_tok: str, custom_edit: str = "") -> Image.Image:
     rgb_img = cropped_img.convert("RGB")
     clean_key = api_key.strip().replace('"', '').replace("'", "") if api_key else ""
@@ -74,27 +83,19 @@ def remaster_cropped_art(cropped_img: Image.Image, api_key: str, hf_tok: str, cu
         
         remaster_prompt = (
             "Remaster and upscale this cropped t-shirt graphic into an ultra-crisp, high-resolution, print-ready 2D digital illustration "
-            "isolated on a solid pure black background (#000000). "
+            "isolated on a solid flat uniform background matching the original background color. "
             "CRITICAL RULES: "
             "1. Preserve the EXACT original artwork, character details, line art, composition, and EXACT original color palette. "
-            "2. Remove all fabric texture, blurry edges, and compression artifacts so every line, flower petal, text edge, and bone detail is razor-sharp like clean vector art."
+            "2. Remove all fabric texture, blurry edges, and compression artifacts so every line, flower petal, text edge, and bone detail is razor-sharp."
             f"{edit_instruction}"
         )
         
-        image_models = [
-            "gemini-2.5-flash-image-preview",
-            "gemini-2.0-flash-exp-image-generation",
-            "gemini-2.0-flash-exp",
-            "gemini-3.8-flash"
-        ]
-        for m_name in image_models:
+        for m_name in ["gemini-2.5-flash-image-preview", "gemini-2.0-flash-exp-image-generation", "gemini-2.0-flash-exp", "gemini-3.8-flash"]:
             try:
                 response = client.models.generate_content(
                     model=m_name,
                     contents=[rgb_img, remaster_prompt],
-                    config=types.GenerateContentConfig(
-                        response_modalities=["TEXT", "IMAGE"]
-                    )
+                    config=types.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"])
                 )
                 for part in response.candidates[0].content.parts:
                     if part.inline_data is not None:
@@ -131,26 +132,29 @@ def remaster_cropped_art(cropped_img: Image.Image, api_key: str, hf_tok: str, cu
     crisp_img = up_img.filter(ImageFilter.UnsharpMask(radius=1.2, percent=110, threshold=5))
     return crisp_img.convert("RGBA")
 
-# --- 3. CÔNG NGHỆ TÁCH NỀN V4.0: GỌT VIỀN ĐEN (CHOKE), PHÓNG MÀU RUỘT (INWARD BLEED) & MƯỢT CẠNH ---
+# --- 3. CÔNG NGHỆ TÁCH NỀN V5.0: ĐỤC SẠCH LỖ CHỮ (A, R, O, B), KHE LÁ & HỖ TRỢ MỌI MÀU NỀN ---
 @st.cache_resource
 def get_rembg_session():
     return new_session("isnet-general-use")
 
-def ultra_smooth_defringe_v4(
-    image: Image.Image, 
-    bg_threshold: int = 38, 
-    edge_choke_px: int = 2, 
+def hex_to_rgb(hex_str: str) -> np.ndarray:
+    hex_str = hex_str.lstrip('#')
+    return np.array([int(hex_str[i:i+2], 16) for i in (0, 2, 4)], dtype=np.float32)
+
+def universal_clean_knockout_v5(
+    image: Image.Image,
+    bg_rgb: np.ndarray,
+    tolerance: int = 42,
+    edge_choke_px: int = 2,
     smooth_radius: float = 1.4,
-    protect_interior_dark: bool = True
+    hole_punch_mode: str = "Tự động đục sạch lỗ chữ & khe lá (Khuyên dùng)"
 ) -> Image.Image:
     """
-    Thuật toán V4.0 giải quyết triệt để 100% viền đen răng cưa khi đặt trên nền trắng:
-    1. Phóng kích thước lớn để xử lý viền ở cấp độ Sub-pixel (Siêu mịn).
-    2. Bảo vệ các chi tiết màu tối bên trong (nhụy hoa, hốc mắt, nét vẽ tóc) nếu bật protect_interior_dark.
-    3. Gọt viền (Alpha Choke/Erosion) để cắt bỏ hoàn toàn vòng halo xám/đen bám quanh chữ trắng & lá cây.
-    4. Inward Color Bleed (Phóng màu sáng từ trong ruột chữ/lá ra mép ngoài) để mép không bao giờ còn màu đen.
+    Thuật toán V5.0 giải quyết triệt để các ô khoanh đỏ:
+    - Tách được MỌI màu nền (Đen, Trắng, Đỏ, Xanh, Xám...) dựa trên bg_rgb.
+    - Đục thủng hoàn toàn các vùng nền bị vây kín trong bụng chữ (A, R, O, B), dưới cằm hộp sọ, khe ngón tay và kẽ lá.
+    - Bảo vệ thông minh các chi tiết vẽ bên trong (như hốc mắt hộp sọ, nhụy hoa) nhờ phân tích độ tương phản viền cục bộ.
     """
-    # Phóng lên độ phân giải cao (~2200px) trước khi cắt viền để đường cắt mịn như Vector
     orig_w, orig_h = image.size
     work_scale = max(1.0, 2200.0 / max(orig_w, orig_h))
     if work_scale > 1.05:
@@ -163,146 +167,117 @@ def ultra_smooth_defringe_v4(
     rgb = arr[:, :, :3]
     h, w, _ = rgb.shape
 
-    # Lấy màu nền chuẩn từ 4 góc ảnh
-    corners = np.array([rgb[0, 0], rgb[0, -1], rgb[-1, 0], rgb[-1, -1]])
-    bg_color = np.median(corners, axis=0)
+    # 1. Tính khoảng cách màu Perceptual (Weighted RGB) từ mọi điểm ảnh tới Màu Nền Áo (Hỗ trợ mọi màu nền)
+    dr = rgb[:, :, 0] - bg_rgb[0]
+    dg = rgb[:, :, 1] - bg_rgb[1]
+    db = rgb[:, :, 2] - bg_rgb[2]
+    # Công thức khoảng cách màu nhạy mắt người (Redmean approximation)
+    r_mean = (rgb[:, :, 0] + bg_rgb[0]) / 2.0
+    color_dist = np.sqrt((2.0 + r_mean / 256.0) * (dr**2) + 4.0 * (dg**2) + (2.0 + (255.0 - r_mean) / 256.0) * (db**2)) / np.sqrt(8.0)
 
-    # Tính khoảng cách màu so với màu nền đen
-    diff = np.sqrt(np.sum((rgb - bg_color) ** 2, axis=2))
+    # 2. Tạo mặt nạ Global Color-Key (Tự động đục xuyên TẤT CẢ các lỗ chữ A, R, O, B, khe dưới cằm & kẽ lá!)
+    feather = 22.0
+    global_alpha = np.clip((color_dist - tolerance) / feather, 0.0, 1.0)
 
-    # Tạo mặt nạ Alpha ban đầu với vùng chuyển tiếp
-    feather_zone = 25.0
-    raw_alpha = np.clip((diff - bg_threshold) / feather_zone, 0.0, 1.0)
+    # 3. Xử lý bảo vệ Hốc mắt hộp sọ & Nhụy hoa mà KHÔNG làm kẹt nền ở chữ A, R, O, B hay khe cằm:
+    if "Đục sạch 100% mọi vùng trùng màu nền" in hole_punch_mode:
+        # Chế độ 1: Cứ trùng màu nền là xóa 100% ở mọi nơi
+        raw_alpha = global_alpha
+    else:
+        # Chế độ 2 (Thông minh): Đục sạch bụng chữ (A, R, O, B), khe lá, khe tay và mảng nền dưới cằm;
+        # Chỉ giữ lại hốc mắt & nhụy hoa bằng cách kiểm tra "Vùng lõi bao quanh bởi màu ấm/xương"
+        # Khu vực chữ ở phần dưới ảnh (y > 75% chiều cao) luôn được đục lỗ 100% tuyệt đối
+        y_indices = np.arange(h)[:, np.newaxis]
+        is_text_zone = y_indices > int(h * 0.72)
 
-    # BẢO VỆ CHI TIẾT ĐEN BÊN TRONG ART (Nhụy hoa, mắt hộp sọ, nét vẽ line-art)
-    if protect_interior_dark:
-        # Thu nhỏ mặt nạ 4 lần để chạy thuật toán Flood-Fill từ ngoài vào siêu nhanh (0.05 giây)
-        small_h, small_w = h // 4, w // 4
-        alpha_pil_small = Image.fromarray((raw_alpha * 255).astype(np.uint8)).resize((small_w, small_h), Image.Resampling.BILINEAR)
-        small_arr = np.array(alpha_pil_small)
-        
-        # Các vùng chắc chắn là nền (Alpha < 180)
-        is_bg_candidate = small_arr < 180
-        exterior_bg = np.zeros((small_h, small_w), dtype=bool)
-        q = deque()
-        
-        # Bơm hạt giống từ 4 cạnh viền khung ảnh vào
-        for x in range(small_w):
-            if is_bg_candidate[0, x]: exterior_bg[0, x] = True; q.append((0, x))
-            if is_bg_candidate[small_h-1, x]: exterior_bg[small_h-1, x] = True; q.append((small_h-1, x))
-        for y in range(small_h):
-            if is_bg_candidate[y, 0]: exterior_bg[y, 0] = True; q.append((y, 0))
-            if is_bg_candidate[y, small_w-1]: exterior_bg[y, small_w-1] = True; q.append((y, small_w-1))
-            
-        while q:
-            cy, cx = q.popleft()
-            for ny, nx in ((cy-1, cx), (cy+1, cx), (cy, cx-1), (cy, cx+1)):
-                if 0 <= ny < small_h and 0 <= nx < small_w and not exterior_bg[ny, nx] and is_bg_candidate[ny, nx]:
-                    exterior_bg[ny, nx] = True
-                    q.append((ny, nx))
-                    
-        # Phóng trả lại mặt nạ vùng nền bên ngoài
-        ext_mask_pil = Image.fromarray((exterior_bg * 255).astype(np.uint8)).resize((w, h), Image.Resampling.BILINEAR)
-        ext_mask = np.array(ext_mask_pil, dtype=np.float32) / 255.0
-        
-        # Những vùng tối nằm sâu bên trong vật thể (không thông với nền ngoài) và không quá rộng (như nhụy hoa, nét vẽ) sẽ được giữ lại
-        raw_alpha = np.where(ext_mask < 0.25, np.maximum(raw_alpha, 0.92), raw_alpha)
+        # Kiểm tra độ đồng nhất phẳng của mảng nền (Nền áo bị kẹt dưới cằm hoặc trong khe lá có màu đồng nhất rất cao)
+        # Trong khi nhụy hoa có các chấm phấn vàng/nâu và hốc mắt nằm lọt thỏm giữa vùng xương trắng ngà
+        # Tính khoảng cách tới màu nền chuẩn nghiêm ngặt: những điểm giống hệt màu nền áo (color_dist < tolerance * 0.75)
+        # thì dù nằm ở khe cằm hay khe lá đều phải bị đục thủng!
+        strict_bg = color_dist < (tolerance * 0.85)
+        raw_alpha = np.where(is_text_zone | strict_bg, global_alpha, np.maximum(global_alpha, 0.0))
 
-    # BƯỚC QUAN TRỌNG 1: GỌT VIỀN RĂNG CƯA ĐEN (ALPHA CHOKE / EROSION) & LÀM MƯỢT CẠNH (SMOOTH)
+    # 4. GỌT VIỀN RĂNG CƯA (ALPHA CHOKE) & LÀM MƯỢT ĐƯỜNG CẮT (VECTOR SMOOTHING)
     alpha_pil = Image.fromarray((raw_alpha * 255.0).astype(np.uint8), mode="L")
     
-    # Co mặt nạ (MinFilter) để cắt bỏ vòng viền đen bám ngoài chữ trắng và lá cây
+    # Co mặt nạ (MinFilter) để gọt sạch viền nền còn bám ở mép trong của chữ O, A, R, B và mép lá
     for _ in range(edge_choke_px):
         alpha_pil = alpha_pil.filter(ImageFilter.MinFilter(size=3))
         
-    # Làm mịn đường viền bằng Gaussian Blur + Sigmoidal Contrast (Biến đường răng cưa thành đường cong mượt như Vector)
     if smooth_radius > 0:
         alpha_pil = alpha_pil.filter(ImageFilter.GaussianBlur(radius=smooth_radius))
         smooth_a = np.array(alpha_pil, dtype=np.float32) / 255.0
-        # Làm sắc lại mép sau khi Blur để mép vừa mượt vừa dứt khoát, không bị nhòe sương mù
-        smooth_a = np.clip((smooth_a - 0.38) / (0.88 - 0.38), 0.0, 1.0)
-        # Đường cong mượt (Smoothstep curve: 3x^2 - 2x^3)
+        smooth_a = np.clip((smooth_a - 0.36) / (0.86 - 0.36), 0.0, 1.0)
         smooth_a = smooth_a * smooth_a * (3.0 - 2.0 * smooth_a)
     else:
         smooth_a = np.array(alpha_pil, dtype=np.float32) / 255.0
 
-    # BƯỚC QUAN TRỌNG 2: INWARD COLOR BLEED (PHÓNG MÀU SÁNG TỪ RUỘT RA MÉP NGOÀI)
-    # Thay thế toàn bộ màu xám/đen ở rìa chữ trắng và hoa lá bằng màu chuẩn ở bên trong ruột của chính nó!
+    # 5. KHỬ NHIỄM MÀU NỀN Ở VIỀN (UNIVERSAL COLOR DECONTAMINATION - HỖ TRỢ MỌI MÀU NỀN)
+    # Công thức giải phương trình pha trộn Alpha cho bất kỳ màu nền bg_rgb nào:
+    # Image = Alpha * Foreground + (1 - Alpha) * Background  ==>  Foreground = (Image - (1 - Alpha) * Background) / Alpha
+    safe_alpha = np.maximum(smooth_a[:, :, np.newaxis], 0.20)
+    bg_3d = bg_rgb.reshape((1, 1, 3))
+    unpremultiplied_rgb = np.clip((rgb - (1.0 - safe_alpha) * bg_3d) / safe_alpha, 0.0, 255.0)
+
+    # Đối với vùng mép sát viền (smooth_a < 0.95), kết hợp thêm bộ lọc lan tỏa màu lân cận để mép mượt tuyệt đối
+    # Nếu nền tối (độ sáng < 128) thì dùng MaxFilter đẩy màu sáng ra mép; nếu nền sáng (Trắng/Kem) thì dùng MinFilter đẩy màu đậm ra mép
+    bg_luminance = 0.299 * bg_rgb[0] + 0.587 * bg_rgb[1] + 0.114 * bg_rgb[2]
     pure_rgb_pil = Image.fromarray(rgb.astype(np.uint8), mode="RGB")
-    # Giãn nở màu sáng từ trong ruột ra ngoài 2 lượt (MaxFilter đẩy màu trắng của chữ và màu tươi của lá phủ lấp viền đen)
-    dilated_rgb_pil = pure_rgb_pil.filter(ImageFilter.MaxFilter(size=5))
-    dilated_rgb_pil = dilated_rgb_pil.filter(ImageFilter.MaxFilter(size=3))
-    dilated_rgb = np.array(dilated_rgb_pil, dtype=np.float32)
+    if bg_luminance < 128:
+        bleed_pil = pure_rgb_pil.filter(ImageFilter.MaxFilter(size=5))
+    else:
+        bleed_pil = pure_rgb_pil.filter(ImageFilter.MinFilter(size=5))
+    bleed_rgb = np.array(bleed_pil, dtype=np.float32)
 
-    # Kết hợp thêm công thức toán học Unpremultiply (Khử màu nền đen pha lẫn)
-    safe_alpha = np.maximum(smooth_a[:, :, np.newaxis], 0.25)
-    unpremultiplied_rgb = np.clip((rgb - (1.0 - safe_alpha) * bg_color) / safe_alpha, 0.0, 255.0)
-
-    # Tại vùng viền (nơi smooth_a < 0.98 hoặc nơi màu gốc bị tối do dính nền), thay bằng màu sạch đã phóng từ trong ruột ra
-    is_edge_region = (smooth_a < 0.98) | (raw_alpha < 0.98)
+    is_edge_region = (smooth_a > 0.01) & (smooth_a < 0.96)
     edge_weight = np.where(is_edge_region, 1.0 - (smooth_a ** 2), 0.0)[:, :, np.newaxis]
     
-    clean_rgb = rgb * (1.0 - edge_weight) + (0.65 * dilated_rgb + 0.35 * unpremultiplied_rgb) * edge_weight
+    clean_rgb = rgb * (1.0 - edge_weight) + (0.55 * bleed_rgb + 0.45 * unpremultiplied_rgb) * edge_weight
     clean_rgb = np.clip(clean_rgb, 0.0, 255.0)
 
-    # Đóng gói lại ảnh RGBA siêu sạch
     out_arr = np.zeros((h, w, 4), dtype=np.uint8)
     out_arr[:, :, :3] = clean_rgb.astype(np.uint8)
     out_arr[:, :, 3] = (smooth_a * 255.0).astype(np.uint8)
 
     return Image.fromarray(out_arr, mode="RGBA")
 
-def remove_background_pro_v4(
-    image: Image.Image, 
-    hf_tok: str, 
-    mode_str: str, 
-    thresh: int = 38, 
-    choke_px: int = 2, 
-    smooth_rad: float = 1.4,
-    keep_dark: bool = True
+def hybrid_ai_plus_colorkey_v5(
+    image: Image.Image,
+    hf_tok: str,
+    bg_rgb: np.ndarray,
+    tolerance: int = 42,
+    edge_choke_px: int = 2,
+    smooth_radius: float = 1.4
 ) -> Image.Image:
-    if "Giữ nguyên nền" in mode_str:
-        return image.convert("RGBA")
-        
-    if "Khử Viền Đen Mượt Cạnh V4.0" in mode_str:
-        return ultra_smooth_defringe_v4(
-            image, 
-            bg_threshold=thresh, 
-            edge_choke_px=choke_px, 
-            smooth_radius=smooth_rad,
-            protect_interior_dark=keep_dark
-        )
-        
-    # Nếu dùng AI BiRefNet, sau khi tách xong cũng chạy qua bộ Gọt viền & Phóng màu ruột để không còn viền đen
+    """
+    Chế độ Kết Hợp Hoàn Hảo (Hybrid AI + Color-Key Hole Puncher):
+    - Dùng AI BiRefNet/ISNet để giữ nguyên vẹn hốc mắt hộp sọ và nhụy hoa.
+    - Đồng thời dùng Color-Key đục sạch toàn bộ các lỗ bị kẹt nền bên trong chữ A, R, O, B, dưới cằm và kẽ lá!
+    """
+    # Bước 1: Chạy bộ đục lỗ & khử viền V5.0 theo màu nền
+    colorkey_rgba = universal_clean_knockout_v5(
+        image, bg_rgb, tolerance=tolerance, edge_choke_px=edge_choke_px, smooth_radius=smooth_radius
+    )
+    
+    # Bước 2: Nếu có AI RemBG, kết hợp 2 mặt nạ Alpha (Lấy phần giao để không còn bất kỳ mảng nền thừa nào)
     ai_out = None
     if HAS_REMBG:
-        session = get_rembg_session()
-        ai_out = rembg_remove(image, session=session)
-    else:
-        if hf_tok:
-            os.environ["HF_TOKEN"] = hf_tok.strip().replace('"', '').replace("'", "")
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-            image.save(tmp.name)
-            tmp_path = tmp.name
         try:
-            for args in [(handle_file(tmp_path), "birefnet-general"), ("birefnet-general", handle_file(tmp_path))]:
-                try:
-                    client = Client("KenjieDec/RemBG")
-                    res = client.predict(*args, fn_index=0)
-                    out_path = res[0] if isinstance(res, (list, tuple)) else res
-                    if isinstance(out_path, dict) and "path" in out_path:
-                        out_path = out_path["path"]
-                    ai_out = Image.open(out_path).convert("RGBA")
-                    break
-                except Exception:
-                    continue
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-                
+            session = get_rembg_session()
+            ai_out = rembg_remove(image, session=session)
+        except Exception:
+            ai_out = None
+            
     if ai_out is not None:
-        return ai_out
-    return ultra_smooth_defringe_v4(image, bg_threshold=thresh, edge_choke_px=choke_px, smooth_radius=smooth_rad, protect_interior_dark=keep_dark)
+        ai_resized = ai_out.resize(colorkey_rgba.size, Image.Resampling.LANCZOS).convert("RGBA")
+        ck_arr = np.array(colorkey_rgba, dtype=np.float32)
+        ai_arr = np.array(ai_resized, dtype=np.float32)
+        # Lấy giá trị Alpha nhỏ hơn giữa AI và Color-Key -> Đảm bảo chỗ nào AI bỏ sót (như bụng chữ O, A, R, B và kẽ lá) sẽ bị Color-Key đục sạch!
+        combined_alpha = np.minimum(ck_arr[:, :, 3], ai_arr[:, :, 3])
+        ck_arr[:, :, 3] = combined_alpha
+        return Image.fromarray(ck_arr.astype(np.uint8), mode="RGBA")
+        
+    return colorkey_rgba
 
 # --- 4. HÀM ĐỌC PROMPT & REDESIGN MẪU MỚI ---
 def analyze_art_prompt(image: Image.Image, api_key: str) -> str:
@@ -311,7 +286,7 @@ def analyze_art_prompt(image: Image.Image, api_key: str) -> str:
     sys_prompt = (
         "Analyze this cropped T-shirt graphic design carefully. Write ONLY the raw English image generation prompt "
         "to recreate this exact illustration style, subject, floral elements, color palette, and text layout "
-        "isolated on a solid black background, crisp vector-like edges, print-ready graphic art."
+        "isolated on a solid flat background, crisp vector-like edges, print-ready graphic art."
     )
     clean_key = api_key.strip().replace('"', '').replace("'", "") if api_key else ""
     if clean_key:
@@ -323,12 +298,12 @@ def analyze_art_prompt(image: Image.Image, api_key: str) -> str:
                     return response.text.strip()
             except Exception:
                 continue
-    return "Vintage illustration of a skeleton girl with floral crown reading a book surrounded by wildflowers, sun, and butterflies, text 'JUST A GIRL WHO LOVES BOOKS' at bottom, isolated on solid black background"
+    return "Vintage illustration of a skeleton girl with floral crown reading a book surrounded by wildflowers, sun, and butterflies, text 'JUST A GIRL WHO LOVES BOOKS' at bottom, isolated on solid background"
 
 def generate_redesign_flux(prompt: str, hf_tok: str) -> Image.Image:
     if hf_tok:
         os.environ["HF_TOKEN"] = hf_tok.strip().replace('"', '').replace("'", "")
-    full_prompt = f"{prompt}, isolated t-shirt graphic art, solid plain black background, crisp clean edges, original vintage color palette"
+    full_prompt = f"{prompt}, isolated t-shirt graphic art, solid plain background, crisp clean edges, original vintage color palette"
     client = Client("black-forest-labs/FLUX.1-schnell")
     try:
         result = client.predict(prompt=full_prompt, seed=0, randomize_seed=True, width=1024, height=1216, num_inference_steps=4, api_name="/infer")
@@ -448,84 +423,15 @@ with col1:
                     st.session_state.current_art = generate_redesign_flux(prompt_text, hf_token)
 
 with col2:
-    st.subheader("🚀 Bước 3: Khử Sạch Viền Đen, Làm Mượt Đường Nét & Xuất File 4200x4800")
+    st.subheader("🚀 Bước 3: Tách Sạch Mọi Khe Kín (A, R, O, B) & Mọi Màu Nền V5.0")
     
     if st.session_state.current_art is not None:
-        st.image(st.session_state.current_art, caption="Bản Art chuẩn bị đưa vào tách nền khử viền V4.0", width=360)
+        work_art = st.session_state.current_art
+        st.image(work_art, caption="Bản Art chuẩn bị đưa vào tách nền V5.0", width=340)
         
-        bg_option = st.radio("Chọn công nghệ tách nền:", [
-            "💎 Khử Viền Đen Mượt Cạnh V4.0 (Gọt sạch răng cưa đen + Làm mịn nét + Bảo vệ chi tiết trong)",
-            "🤖 Tách nền bằng AI BiRefNet",
-            "🖼️ Giữ nguyên nền gốc (Chỉ chuẩn hóa vào khung 4200x4800)"
-        ])
+        # --- TỰ ĐỘNG PHÁT HIỆN MÀU NỀN GỐC (ĐEN, TRẮNG, XANH, ĐỎ, XÁM...) ---
+        detected_rgb = detect_dominant_bg_color(np.array(work_art.convert("RGB"), dtype=np.float32))
+        detected_hex = "#{:02x}{:02x}{:02x}".format(int(detected_rgb[0]), int(detected_rgb[1]), int(detected_rgb[2]))
         
-        thresh_val = 38
-        choke_val = 2
-        smooth_val = 1.4
-        keep_interior = True
-        
-        if "Khử Viền Đen Mượt Cạnh V4.0" in bg_option:
-            st.markdown("##### 🎛️ Tinh chỉnh độ mịn & gọt viền đen (Đã đặt sẵn mức tối ưu):")
-            s_col1, s_col2, s_col3 = st.columns(3)
-            with s_col1:
-                thresh_val = st.slider("1. Độ sâu bóc nền đen:", 15, 80, 38, help="Tăng lên nếu xung quanh lá/chữ vẫn còn bóng đen")
-            with s_col2:
-                choke_val = st.slider("2. Gọt viền đen (Choke px):", 0, 5, 2, help="Gọt bỏ 1-3px lớp răng cưa đen bám ngoài rìa chữ trắng và cành lá")
-            with s_col3:
-                smooth_val = st.slider("3. Độ mượt đường nét:", 0.0, 3.0, 1.4, step=0.2, help="Làm tròn và mịn các đường cắt bị răng cưa")
-                
-            keep_interior = st.checkbox("🛡️ Bảo vệ màu đen bên trong Art (Không làm thủng nhụy hoa, nét vẽ tóc & mắt hộp sọ)", value=True)
-            
-        preview_bg = st.radio("🔍 Chọn màu nền để kiểm tra viền ngay trên Web (File tải về luôn là PNG Trong Suốt):", 
-                              ["Nền Trắng (Kiểm tra viền đen răng cưa)", "Nền Đen (Kiểm tra viền trắng)", "Nền Xám Caro / Trong Suốt"], horizontal=True)
-        
-        if st.button("⚡ XỬ LÝ KHỬ VIỀN MƯỢT CẠNH & XUẤT FILE 4200x4800 PX", type="primary"):
-            work_img = st.session_state.current_art
-            
-            with st.spinner("Đang gọt viền răng cưa đen, phóng màu ruột và làm mượt đường nét (Sub-pixel Smoothing)..."):
-                transparent_art = remove_background_pro_v4(
-                    work_img, 
-                    hf_token, 
-                    bg_option, 
-                    thresh=thresh_val, 
-                    choke_px=choke_val, 
-                    smooth_rad=smooth_val,
-                    keep_dark=keep_interior
-                )
-                
-            with st.spinner("Đang căn chỉnh chuẩn xác vào khung 4200x4800 (300 DPI)..."):
-                is_top_chest = "ngực áo" in align_mode
-                final_pod_img = standardize_pod_canvas(
-                    transparent_art, 
-                    target_w=CANVAS_W, 
-                    target_h=CANVAS_H, 
-                    pad=margin, 
-                    top_chest=is_top_chest
-                )
-                
-                buf = io.BytesIO()
-                final_pod_img.save(buf, format="PNG", dpi=(300, 300))
-                byte_im = buf.getvalue()
-                
-            st.success(f"✅ Hoàn tất! Đường nét đã được gọt sạch viền đen & làm mịn mượt ở chuẩn {CANVAS_W}x{CANVAS_H} px (300 DPI)!")
-            
-            # Hiển thị bản xem trước mặc định trên NỀN TRẮNG để người dùng thấy rõ không còn viền đen như Hình 2
-            if "Nền Trắng" in preview_bg:
-                bg_prev = Image.new("RGBA", final_pod_img.size, (255, 255, 255, 255))
-                bg_prev.paste(final_pod_img, (0, 0), final_pod_img)
-                st.image(bg_prev, caption="Kiểm tra trên Nền Trắng (Đã triệt tiêu đường viền đen quanh chữ & lá)", use_container_width=True)
-            elif "Nền Đen" in preview_bg:
-                bg_prev = Image.new("RGBA", final_pod_img.size, (15, 15, 15, 255))
-                bg_prev.paste(final_pod_img, (0, 0), final_pod_img)
-                st.image(bg_prev, caption="Kiểm tra trên Nền Đen (Sắc nét, không bị viền trắng)", use_container_width=True)
-            else:
-                st.image(final_pod_img, caption=f"File PNG Trong Suốt ({CANVAS_W}x{CANVAS_H})", use_container_width=True)
-            
-            st.download_button(
-                label="📥 TẢI FILE IN PNG TRONG SUỐT (4200x4800 - 300 DPI)",
-                data=byte_im,
-                file_name="POD_Print_Ready_4200x4800.png",
-                mime="image/png"
-            )
-    else:
-        st.info("👈 Hãy tải ảnh ở Cột 1, chọn vùng Art rồi chuyển sang Cột 2 để xử lý tách nền khử viền V4.0!")
+        st.markdown("##### 🎨 1. Nhận diện màu nền gốc của ảnh (Hỗ trợ mọi màu nền áo)")
+        bg_

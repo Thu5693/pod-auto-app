@@ -44,96 +44,64 @@ with st.sidebar:
                            "Căn chính giữa tâm khung hình (Center)"])
 
 def analyze_art_prompt(image: Image.Image, api_key: str) -> str:
-    client = genai.Client(api_key=api_key.strip())
+    # 1. Chuyển ảnh sang chuẩn RGB và nén nhẹ để gửi qua API không bị lỗi định dạng RGBA
+    rgb_img = image.convert("RGB")
+    rgb_img.thumbnail((1024, 1024))
+    
     sys_prompt = (
         "Analyze this T-shirt graphic design carefully. Write a detailed image generation prompt "
         "in English to recreate a similar graphic design style, layout, typography placement, and color palette. "
         "IMPORTANT: Describe it as an isolated flat vector/illustration graphic on a solid plain white background, "
         "NO t-shirt mockup, NO wrinkles, crisp edges, print-ready graphic art."
     )
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=[image, sys_prompt]
-    )
-    return response.text
 
-def generate_redesign_flux(prompt: str, hf_tok: str) -> Image.Image:
-    if hf_tok:
-        os.environ["HF_TOKEN"] = hf_tok.strip()
-    client = Client("black-forest-labs/FLUX.1-schnell")
-    result = client.predict(
-        prompt=f"{prompt}, isolated t-shirt graphic design, flat 2d vector illustration, solid white background, high contrast, clean edges",
-        seed=0,
-        randomize_seed=True,
-        width=1024,
-        height=1216,
-        num_inference_steps=4,
-        api_name="/infer"
-    )
-    img_path = result[0] if isinstance(result, (list, tuple)) else result
-    return Image.open(img_path).convert("RGBA")
-
-@st.cache_resource
-def get_rembg_session():
-    return new_session("isnet-general-use")
-
-def remove_background_smart(image: Image.Image, hf_tok: str) -> Image.Image:
-    # 1. Nếu máy đã cài rembg thì chạy trực tiếp (Siêu nhanh, không cần mạng)
-    if HAS_REMBG:
-        session = get_rembg_session()
-        return rembg_remove(image, session=session)
+    # 2. Thử gọi qua các phiên bản Gemini khác nhau (Bắt mọi lỗi để KHÔNG BAO GIỜ sập App)
+    clean_key = api_key.strip().replace('"', '').replace("'", "") if api_key else ""
+    
+    if clean_key:
+        client = genai.Client(api_key=clean_key)
+        # Thử lần lượt các model từ mới đến ổn định nhất để tránh lỗi 404/429 ở từng model
+        for model_name in ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash"]:
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[rgb_img, sys_prompt]
+                )
+                if response and response.text:
+                    return response.text
+            except Exception as e:
+                # Lấy mã lỗi hiển thị rõ ràng thay vì để Streamlit giấu đi
+                err_code = getattr(e, "code", getattr(e, "status_code", "Unknown"))
+                err_msg = getattr(e, "message", str(e))
+                last_gemini_err = f"Model {model_name} báo mã {err_code}: {err_msg}"
+                continue
         
-    # 2. Gọi qua Cloud: Tự động kiểm tra vị trí tham số chuẩn xác
-    if hf_tok:
-        os.environ["HF_TOKEN"] = hf_tok.strip()
-        
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-        image.save(tmp.name)
+        st.warning(f"⚠️ Gemini API đang từ chối ({last_gemini_err}). Đang tự động chuyển sang AI đọc ảnh dự phòng miễn phí...")
+
+    # 3. CHẾ ĐỘ DỰ PHÒNG (FALLBACK): Nếu Gemini lỗi hoặc quên nhập Key, tự dùng AI miễn phí trên Cloud
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+        rgb_img.save(tmp.name, format="JPEG", quality=90)
         tmp_path = tmp.name
         
     try:
-        # Thử Cách A: Đảo thứ tự (Tên Model đứng trước, File ảnh đứng sau) trên KenjieDec/RemBG
-        try:
-            client = Client("KenjieDec/RemBG")
-            result = client.predict(
-                "birefnet-general",
-                handle_file(tmp_path),
-                fn_index=0
-            )
-            out_path = result[0] if isinstance(result, (list, tuple)) else result
-            if isinstance(out_path, dict) and "path" in out_path:
-                out_path = out_path["path"]
-            return Image.open(out_path).convert("RGBA")
-        except Exception:
-            pass
-
-        # Thử Cách B: Gọi Space NOTYPE/Background-Removal hoặc RMBG chỉ nhận duy nhất 1 tham số là Ảnh
-        single_input_spaces = [
-            "not-lain/background-removal",
-            "briaai/BRIA-RMBG-1.4",
-            "hf-vision/background-removal"
-        ]
-        for sp in single_input_spaces:
-            try:
-                client = Client(sp)
-                # Lấy danh sách api_name thực tế mà server đó đang mở
-                info = client.view_api(return_format="dict")
-                endpoints = list(info.get("named_endpoints", {}).keys())
-                
-                for ep in endpoints:
-                    try:
-                        res = client.predict(handle_file(tmp_path), api_name=ep)
-                        # Nếu trả về tuple (ảnh so sánh, ảnh kết quả) thì lấy ảnh PNG cuối cùng
-                        out_path = res[-1] if isinstance(res, (list, tuple)) else res
-                        if isinstance(out_path, dict) and "path" in out_path:
-                            out_path = out_path["path"]
-                        return Image.open(out_path).convert("RGBA")
-                    except Exception:
-                        continue
-            except Exception:
-                continue
-
-        raise Exception("Chưa kết nối được cổng tách nền Cloud.")
+        # Gọi model đọc Prompt chuyên dụng cho Flux/Midjourney trên Hugging Face
+        caption_client = Client("fancyfeast/joy-caption-alpha-two")
+        res = caption_client.predict(
+            handle_file(tmp_path),
+            "Descriptive",
+            "long",
+            fn_index=0
+        )
+        caption_text = res[-1] if isinstance(res, (list, tuple)) else str(res)
+        return f"{caption_text}, isolated t-shirt graphic design, flat vector illustration, solid white background, print-ready"
+    except Exception:
+        # Nếu server dự phòng cũng bận, trả về mẫu Prompt khung chuẩn để người dùng tự điền từ khóa
+        st.info("💡 Hãy kiểm tra lại mã Gemini API Key (bắt đầu bằng AIza...) tại aistudio.google.com. Tạm thời hệ thống tạo sẵn khung Prompt chuẩn bên dưới để bạn điền chủ đề:")
+        return (
+            "Vintage bootleg rap tee graphic design, bold retro typography at top and bottom, "
+            "central character collage illustration, vibrant neon green lighting effects, "
+            "isolated flat graphic on solid white background, crisp edges, print-ready t-shirt art"
+        )
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)

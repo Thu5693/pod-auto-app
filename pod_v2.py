@@ -44,7 +44,6 @@ with st.sidebar:
                            "Căn chính giữa tâm khung hình (Center)"])
 
 def analyze_art_prompt(image: Image.Image, api_key: str) -> str:
-    # 1. Chuyển ảnh sang chuẩn RGB và nén nhẹ để gửi qua API không bị lỗi định dạng RGBA
     rgb_img = image.convert("RGB")
     rgb_img.thumbnail((1024, 1024))
     
@@ -55,28 +54,51 @@ def analyze_art_prompt(image: Image.Image, api_key: str) -> str:
         "NO t-shirt mockup, NO wrinkles, crisp edges, print-ready graphic art."
     )
 
-    # 2. Thử gọi qua các phiên bản Gemini khác nhau (Bắt mọi lỗi để KHÔNG BAO GIỜ sập App)
     clean_key = api_key.strip().replace('"', '').replace("'", "") if api_key else ""
     
     if clean_key:
         client = genai.Client(api_key=clean_key)
-        # Thử lần lượt các model từ mới đến ổn định nhất để tránh lỗi 404/429 ở từng model
-        for model_name in ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash"]:
+        
+        # 1. Đưa gemini-3.8-flash và gemini-3.0-flash lên đầu theo đúng yêu cầu của Google
+        candidate_models = [
+            "gemini-3.8-flash",
+            "gemini-3.0-flash",
+            "gemini-2.5-pro",
+            "gemini-flash-latest"
+        ]
+        
+        # Tự động quét thêm các model khả dụng thực tế trong tài khoản API của bạn
+        try:
+            for m in client.models.list():
+                m_name = m.name.replace("models/", "")
+                if "flash" in m_name and m_name not in candidate_models:
+                    candidate_models.append(m_name)
+        except Exception:
+            pass
+
+        last_gemini_err = ""
+        for model_name in candidate_models:
             try:
                 response = client.models.generate_content(
                     model=model_name,
                     contents=[rgb_img, sys_prompt]
                 )
                 if response and response.text:
+                    st.success(f"✅ Đã phân tích ảnh thành công bằng model: `{model_name}`!")
                     return response.text
             except Exception as e:
-                # Lấy mã lỗi hiển thị rõ ràng thay vì để Streamlit giấu đi
                 err_code = getattr(e, "code", getattr(e, "status_code", "Unknown"))
                 err_msg = getattr(e, "message", str(e))
                 last_gemini_err = f"Model {model_name} báo mã {err_code}: {err_msg}"
                 continue
         
-        st.warning(f"⚠️ Gemini API đang từ chối ({last_gemini_err}). Đang tự động chuyển sang AI đọc ảnh dự phòng miễn phí...")
+        st.warning(f"⚠️ Chi tiết từ Google: {last_gemini_err}")
+
+    return (
+        "Vintage bootleg rap tee graphic design, bold retro typography at top and bottom, "
+        "central character collage illustration, vibrant neon green lighting effects, "
+        "isolated flat graphic on solid white background, crisp edges, print-ready t-shirt art"
+    )
 
     # 3. CHẾ ĐỘ DỰ PHÒNG (FALLBACK): Nếu Gemini lỗi hoặc quên nhập Key, tự dùng AI miễn phí trên Cloud
     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:

@@ -2,3 +2,5 @@ streamlit
 Pillow
 google-genai
 gradio_client
+rembg
+onnxruntime-gpu

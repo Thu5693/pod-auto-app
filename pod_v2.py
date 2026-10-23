@@ -78,12 +78,12 @@ def get_rembg_session():
     return new_session("isnet-general-use")
 
 def remove_background_smart(image: Image.Image, hf_tok: str) -> Image.Image:
-    # 1. Nếu máy đã cài rembg thì chạy trực tiếp
+    # 1. Nếu máy đã cài rembg thì chạy trực tiếp (Siêu nhanh, không cần mạng)
     if HAS_REMBG:
         session = get_rembg_session()
         return rembg_remove(image, session=session)
         
-    # 2. Gọi qua Cloud KenjieDec/RemBG với đúng bộ tham số (Ảnh + Tên Model BiRefNet)
+    # 2. Gọi qua Cloud: Tự động kiểm tra vị trí tham số chuẩn xác
     if hf_tok:
         os.environ["HF_TOKEN"] = hf_tok.strip()
         
@@ -92,29 +92,48 @@ def remove_background_smart(image: Image.Image, hf_tok: str) -> Image.Image:
         tmp_path = tmp.name
         
     try:
-        client = Client("KenjieDec/RemBG")
-        # Truyền chính xác: File ảnh + Model 'birefnet-general' (Model nét nhất trong danh sách báo lỗi)
-        result = client.predict(
-            handle_file(tmp_path),
-            "birefnet-general",
-            api_name="/inference"
-        )
-        out_path = result[0] if isinstance(result, (list, tuple)) else result
-        if isinstance(out_path, dict) and "path" in out_path:
-            out_path = out_path["path"]
-        return Image.open(out_path).convert("RGBA")
-    except Exception:
-        # Dự phòng nếu api_name khác thì gọi qua fn_index=0 với đủ 2 tham số
-        client = Client("KenjieDec/RemBG")
-        result = client.predict(
-            handle_file(tmp_path),
-            "birefnet-general",
-            fn_index=0
-        )
-        out_path = result[0] if isinstance(result, (list, tuple)) else result
-        if isinstance(out_path, dict) and "path" in out_path:
-            out_path = out_path["path"]
-        return Image.open(out_path).convert("RGBA")
+        # Thử Cách A: Đảo thứ tự (Tên Model đứng trước, File ảnh đứng sau) trên KenjieDec/RemBG
+        try:
+            client = Client("KenjieDec/RemBG")
+            result = client.predict(
+                "birefnet-general",
+                handle_file(tmp_path),
+                fn_index=0
+            )
+            out_path = result[0] if isinstance(result, (list, tuple)) else result
+            if isinstance(out_path, dict) and "path" in out_path:
+                out_path = out_path["path"]
+            return Image.open(out_path).convert("RGBA")
+        except Exception:
+            pass
+
+        # Thử Cách B: Gọi Space NOTYPE/Background-Removal hoặc RMBG chỉ nhận duy nhất 1 tham số là Ảnh
+        single_input_spaces = [
+            "not-lain/background-removal",
+            "briaai/BRIA-RMBG-1.4",
+            "hf-vision/background-removal"
+        ]
+        for sp in single_input_spaces:
+            try:
+                client = Client(sp)
+                # Lấy danh sách api_name thực tế mà server đó đang mở
+                info = client.view_api(return_format="dict")
+                endpoints = list(info.get("named_endpoints", {}).keys())
+                
+                for ep in endpoints:
+                    try:
+                        res = client.predict(handle_file(tmp_path), api_name=ep)
+                        # Nếu trả về tuple (ảnh so sánh, ảnh kết quả) thì lấy ảnh PNG cuối cùng
+                        out_path = res[-1] if isinstance(res, (list, tuple)) else res
+                        if isinstance(out_path, dict) and "path" in out_path:
+                            out_path = out_path["path"]
+                        return Image.open(out_path).convert("RGBA")
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+        raise Exception("Chưa kết nối được cổng tách nền Cloud.")
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)

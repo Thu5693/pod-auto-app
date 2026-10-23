@@ -9,8 +9,8 @@ from google.genai import types
 from gradio_client import Client, handle_file
 
 # --- CẤU HÌNH TRANG WEB ---
-st.set_page_config(page_title="POD Auto Studio V5.4", page_icon="🎯", layout="wide")
-st.title("🎯 [V5.4 PRO] POD Crop, Làm Nét, Đổi Nền, FLUX AI Redesign & Tách Nền Sạch Khe Kín")
+st.set_page_config(page_title="POD Auto Studio V5.5", page_icon="🎯", layout="wide")
+st.title("🎯 [V5.5 PRO] POD Crop, Nắn Thẳng Text, Đồng Nhất Nền, Khung Chuẩn 4200x4800 & Tách Nền")
 
 # --- THANH BÊN (SIDEBAR) ---
 with st.sidebar:
@@ -75,7 +75,7 @@ def auto_detect_art_box(img: Image.Image):
         )
     return (24, 76, 18, 82)
 
-# --- 2. HÀM ĐỒNG NHẤT MÀU NỀN & LÀM NÉT CHUẨN ---
+# --- 2. HÀM ĐỒNG NHẤT MÀU NỀN, NẮN THẲNG TEXT & LÀM NÉT CHUẨN ---
 def unify_background_solid_color(
     image: Image.Image, 
     target_bg_rgb: np.ndarray, 
@@ -126,12 +126,14 @@ def remaster_and_unify_art(
         client = genai.Client(api_key=clean_key)
         edit_instruction = f" Also apply this specific adjustment: {custom_edit}." if custom_edit.strip() else " Keep the exact same typography and font."
         
+        # Bổ sung câu lệnh yêu cầu AI nắn thẳng chữ, căn chỉnh đối xứng và đóng khung chữ nhật chuẩn
         remaster_prompt = (
-            f"Remaster and upscale this cropped t-shirt graphic into an ultra-crisp, high-resolution, print-ready 2D digital illustration "
+            f"Remaster, straighten, and perfectly align this cropped t-shirt graphic into an ultra-crisp, high-resolution, print-ready 2D digital illustration "
             f"isolated on a completely flat, solid uniform background of exact hex color {target_hex}. "
             "CRITICAL RULES: "
-            "1. Preserve the EXACT original artwork, character details, line art, effects, composition, and EXACT original color palette of the design. "
-            f"2. Make the background 100% solid uniform {target_hex} with zero fabric texture, zero wrinkles, and razor-sharp clean edges."
+            "1. Straighten all warped, curved, or tilted text and art elements so everything is geometrically straight, balanced, and horizontally aligned. "
+            "2. Preserve the EXACT original artwork, character details, line art, effects, composition, and EXACT original color palette. "
+            f"3. Make the background 100% solid uniform {target_hex} with zero fabric texture, zero wrinkles, and razor-sharp clean edges inside a rectangular canvas."
             f"{edit_instruction}"
         )
         
@@ -182,7 +184,7 @@ def remaster_and_unify_art(
     final_step2_img = unify_background_solid_color(enhanced_img, target_bg_rgb, bg_tolerance=bg_tolerance)
     return final_step2_img
 
-# --- 3. HÀM CHUẨN HÓA KHUNG 4200x4800 CÓ NỀN ĐỒNG NHẤT ---
+# --- 3. HÀM CHUẨN HÓA KHUNG 4200x4800 CÓ MÀU NỀN ĐỒNG NHẤT ---
 def standardize_solid_bg_canvas(
     img: Image.Image, 
     bg_rgb: np.ndarray, 
@@ -225,7 +227,7 @@ def standardize_solid_bg_canvas(
     canvas.paste(resized_art, (pos_x, pos_y))
     return canvas
 
-# --- 4. CÔNG NGHỆ TÁCH NỀN TRONG SUỐT V5.4 ---
+# --- 4. CÔNG NGHỆ TÁCH NỀN TRONG SUỐT V5.5 ---
 def universal_clean_knockout_v5(
     image: Image.Image,
     bg_rgb: np.ndarray,
@@ -413,7 +415,7 @@ with col1:
             st.image(cropped_art, caption=f"Vùng Art sau khi Crop ({cropped_art.width}x{cropped_art.height}px)", use_container_width=True)
             
         st.divider()
-        st.subheader("✨ Bước 2: Làm nét, Đồng nhất màu nền & Xuất ảnh 4200x4800 (Chưa tách nền)")
+        st.subheader("✨ Bước 2: Nắn Thẳng Text, Làm Nét, Đồng Nhất Nền & Xuất 4200x4800")
         
         orig_crop_bg = detect_dominant_bg_color(np.array(cropped_art.convert("RGB"), dtype=np.float32))
         orig_crop_hex = rgb_to_hex(orig_crop_bg)
@@ -462,8 +464,8 @@ with col1:
         
         b_col1, b_col2 = st.columns(2)
         with b_col1:
-            if st.button("🪄 1. AI Làm Nét + Đồng Nhất Nền & Xuất 4200x4800", type="primary"):
-                with st.spinner(f"Đang làm nét, đồng nhất nền về màu {chosen_step2_hex} và chuẩn hóa 4200x4800px..."):
+            if st.button("🪄 1. AI Làm Nét, Nắn Thẳng Text + Đồng Nhất Nền & Xuất", type="primary"):
+                with st.spinner(f"Đang nắn thẳng text, làm nét, đồng nhất nền về màu {chosen_step2_hex} và chuẩn hóa 4200x4800px..."):
                     remastered = remaster_and_unify_art(
                         cropped_art, gemini_key, hf_token, 
                         target_bg_rgb=step2_bg_rgb, bg_tolerance=step2_tol, custom_edit=custom_tweak
@@ -485,7 +487,7 @@ with col1:
                     st.session_state.step2_preview_img = prev_s2
                     
         with b_col2:
-            if st.button("➡️ 2. Đồng Nhất Nền & Xuất 4200x4800 Nhanh (Không qua AI)"):
+            if st.button("➡️ 2. Đồng Nhất Nền & Xuất 4200x4800 Nhanh"):
                 with st.spinner(f"Đang đồng nhất nền về màu {chosen_step2_hex} và xuất khung 4200x4800px..."):
                     unified_fast = unify_background_solid_color(cropped_art, step2_bg_rgb, bg_tolerance=step2_tol)
                     st.session_state.current_art = unified_fast
@@ -505,7 +507,7 @@ with col1:
                     st.session_state.step2_preview_img = prev_s2
 
         if st.session_state.step2_solid_4200_bytes is not None and st.session_state.step2_preview_img is not None:
-            st.success(f"✅ Hoàn tất Bước 2! Ảnh đã được làm nét và đưa về nền đồng nhất ({st.session_state.step2_bg_hex}) chuẩn {CANVAS_W}x{CANVAS_H} px!")
+            st.success(f"✅ Hoàn tất Bước 2! Text đã được nắn thẳng, ảnh làm nét và đưa về nền đồng nhất ({st.session_state.step2_bg_hex}) chuẩn {CANVAS_W}x{CANVAS_H} px!")
             st.image(
                 st.session_state.step2_preview_img, 
                 caption=f"Kết quả Bước 2: Chưa tách nền - Nền đồng nhất {st.session_state.step2_bg_hex} ({CANVAS_W}x{CANVAS_H} px)", 

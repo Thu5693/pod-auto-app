@@ -434,4 +434,85 @@ with col2:
         detected_hex = "#{:02x}{:02x}{:02x}".format(int(detected_rgb[0]), int(detected_rgb[1]), int(detected_rgb[2]))
         
         st.markdown("##### 🎨 1. Nhận diện màu nền gốc của ảnh (Hỗ trợ mọi màu nền áo)")
-        bg_
+        bg_col1, bg_col2 = st.columns([2, 1])
+        with bg_col1:
+            bg_detect_mode = st.radio(
+                "Chế độ chọn màu nền cần xóa:",
+                [f"🤖 Tự động nhận diện từ viền ảnh (Đang phát hiện màu: {detected_hex})",
+                 "🎯 Tự chấm/chọn màu nền thủ công (Dùng khi viền ảnh bị vướng chi tiết)"],
+                 horizontal=False
+            )
+        with bg_col2:
+            picked_hex = st.color_picker("Màu nền đang xóa:", value=detected_hex)
+            
+        target_bg_rgb = detected_rgb if "Tự động" in bg_detect_mode else hex_to_rgb(picked_hex)
+
+        st.markdown("##### ⚙️ 2. Chọn phương pháp đục lỗ & tách nền")
+        bg_option = st.radio("Phương pháp xử lý:", [
+            "🎯 V5.0 Universal Đục Lỗ Thông Minh (Tách sạch 100% bụng chữ A, R, O, B, khe cằm & kẽ lá + Mượt cạnh)",
+            "⚡ Kết hợp AI + Đục lỗ Color-Key (Hybrid: AI cắt viền ngoài + Color-Key đục sạch khe chữ/khe lá bên trong)",
+            "🖼️ Giữ nguyên nền gốc (Chỉ chuẩn hóa vào khung 4200x4800)"
+        ])
+        
+        st.markdown("##### 🎛️ 3. Tinh chỉnh độ sâu đục khe kín & độ mượt:")
+        s_col1, s_col2, s_col3 = st.columns(3)
+        with s_col1:
+            thresh_val = st.slider("Độ nhạy bóc nền & đục khe:", 15, 90, 44, help="Kéo cao lên (ví dụ 50-60) nếu các khe hẹp giữa lá cây hoặc dưới cằm vẫn còn sót nền")
+        with s_col2:
+            choke_val = st.slider("Gọt viền (Choke px):", 0, 5, 2, help="Gọt bỏ 1-3px lớp viền nền bám ở mép chữ và kẽ lá")
+        with s_col3:
+            smooth_val = st.slider("Độ mượt đường nét:", 0.0, 3.0, 1.4, step=0.2)
+            
+        preview_bg = st.radio("🔍 Màu nền kiểm tra kết quả (File tải về luôn là PNG Trong Suốt):", 
+                              ["Nền Trắng (Kiểm tra nền tối)", "Nền Đen (Kiểm tra nền sáng)", "Nền Xanh Dương (Kiểm tra mọi loại viền)"], horizontal=True)
+        
+        if st.button("⚡ XỬ LÝ TÁCH SẠCH KHE KÍN & XUẤT FILE 4200x4800 PX", type="primary"):
+            with st.spinner("Đang đục sạch nền trong chữ A, R, O, B, các khe lá, dưới cằm và làm mượt đường nét..."):
+                if "Giữ nguyên nền" in bg_option:
+                    transparent_art = work_art.convert("RGBA")
+                elif "Kết hợp AI" in bg_option:
+                    transparent_art = hybrid_ai_plus_colorkey_v5(
+                        work_art, hf_token, target_bg_rgb, 
+                        tolerance=thresh_val, edge_choke_px=choke_val, smooth_radius=smooth_val
+                    )
+                else:
+                    transparent_art = universal_clean_knockout_v5(
+                        work_art, target_bg_rgb, 
+                        tolerance=thresh_val, edge_choke_px=choke_val, smooth_radius=smooth_val,
+                        hole_punch_mode="Đục sạch 100% mọi vùng trùng màu nền"
+                    )
+                
+            with st.spinner("Đang căn chỉnh chuẩn xác vào khung 4200x4800 (300 DPI)..."):
+                is_top_chest = "ngực áo" in align_mode
+                final_pod_img = standardize_pod_canvas(
+                    transparent_art, 
+                    target_w=CANVAS_W, 
+                    target_h=CANVAS_H, 
+                    pad=margin, 
+                    top_chest=is_top_chest
+                )
+                
+                buf = io.BytesIO()
+                final_pod_img.save(buf, format="PNG", dpi=(300, 300))
+                byte_im = buf.getvalue()
+                
+            st.success(f"✅ Hoàn tất! Toàn bộ bụng chữ A, R, O, B, khe dưới cằm và kẽ lá đã được tách sạch sẽ ở chuẩn {CANVAS_W}x{CANVAS_H} px!")
+            
+            if "Nền Trắng" in preview_bg:
+                bg_prev = Image.new("RGBA", final_pod_img.size, (255, 255, 255, 255))
+            elif "Nền Đen" in preview_bg:
+                bg_prev = Image.new("RGBA", final_pod_img.size, (15, 15, 15, 255))
+            else:
+                bg_prev = Image.new("RGBA", final_pod_img.size, (0, 120, 215, 255))
+                
+            bg_prev.paste(final_pod_img, (0, 0), final_pod_img)
+            st.image(bg_prev, caption=f"Kiểm tra kết quả trên {preview_bg}", use_container_width=True)
+            
+            st.download_button(
+                label="📥 TẢI FILE IN PNG TRONG SUỐT (4200x4800 - 300 DPI)",
+                data=byte_im,
+                file_name="POD_Print_Ready_4200x4800.png",
+                mime="image/png"
+            )
+    else:
+        st.info("👈 Hãy tải ảnh ở Cột 1, chọn vùng Art rồi chuyển sang Cột 2 để xử lý tách nền V5.0!")

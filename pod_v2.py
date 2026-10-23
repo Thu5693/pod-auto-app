@@ -12,27 +12,22 @@ try:
 except ImportError:
     HAS_REMBG = False
 
-# --- ĐỔI TIÊU ĐỀ V2.0 ĐỂ NHẬN BIẾT NGAY ĐÃ CHẠY ĐÚNG FILE MỚI ---
+# --- CẤU HÌNH TRANG WEB ---
 st.set_page_config(page_title="POD Auto Studio V2.0", page_icon="🚀", layout="wide")
-st.title("🚀 [BẢN V2.0 - ĐÃ FIX LỖI] POD Auto Clone, Redesign & Chuẩn Hóa 4200x4800")
+st.title("🚀 POD Auto Clone, Redesign, Upscale 4K & Chuẩn Hóa 4200x4800")
 
+# --- THANH BÊN (SIDEBAR) ---
 with st.sidebar:
     st.header("🔑 1. Cấu hình API (Miễn phí)")
-    
-    # Tự động đọc Key từ bộ nhớ bảo mật Secrets (nếu có)
-    default_gemini = st.secrets.get("GEMINI_API_KEY", "")
-    default_hf = st.secrets.get("HF_TOKEN", "")
-    
-    if default_gemini and default_hf:
-        st.success("✅ Đã tự động kết nối sẵn API Key!")
-        gemini_key = default_gemini
-        hf_token = default_hf
-        with st.expander("Thay đổi API Key khác (Tùy chọn)"):
-            gemini_key = st.text_input("Gemini API Key:", value=default_gemini, type="password")
-            hf_token = st.text_input("HuggingFace Token:", value=default_hf, type="password")
-    else:
-        gemini_key = st.text_input("Gemini API Key (Đọc Prompt):", value=default_gemini, type="password")
-        hf_token = st.text_input("HuggingFace Token (GPU AI):", value=default_hf, type="password")
+    try:
+        default_gemini = st.secrets.get("GEMINI_API_KEY", "")
+        default_hf = st.secrets.get("HF_TOKEN", "")
+    except Exception:
+        default_gemini = ""
+        default_hf = ""
+        
+    gemini_key = st.text_input("Gemini API Key (Đọc Prompt):", value=default_gemini, type="password")
+    hf_token = st.text_input("HuggingFace Token (GPU AI):", value=default_hf, type="password")
     
     st.divider()
     st.header("📐 2. Chuẩn khung in POD")
@@ -43,13 +38,14 @@ with st.sidebar:
                           ["Căn giữa ngực áo (Cách mép trên ~350px - Chuẩn áo thun)", 
                            "Căn chính giữa tâm khung hình (Center)"])
 
+# --- 1. HÀM ĐỌC PROMPT TỪ ẢNH GỐC (GEMINI AI) ---
 def analyze_art_prompt(image: Image.Image, api_key: str) -> str:
     rgb_img = image.convert("RGB")
     rgb_img.thumbnail((1024, 1024))
     
     sys_prompt = (
-        "Analyze this T-shirt graphic design carefully. Write a detailed image generation prompt "
-        "in English to recreate a similar graphic design style, layout, typography placement, and color palette. "
+        "Analyze this T-shirt graphic design carefully. Write ONLY the raw English image generation prompt "
+        "to recreate a similar graphic design style, layout, typography placement, and color palette. "
         "IMPORTANT: Describe it as an isolated flat vector/illustration graphic on a solid plain white background, "
         "NO t-shirt mockup, NO wrinkles, crisp edges, print-ready graphic art."
     )
@@ -58,16 +54,12 @@ def analyze_art_prompt(image: Image.Image, api_key: str) -> str:
     
     if clean_key:
         client = genai.Client(api_key=clean_key)
-        
-        # 1. Đưa gemini-3.8-flash và gemini-3.0-flash lên đầu theo đúng yêu cầu của Google
         candidate_models = [
             "gemini-3.8-flash",
             "gemini-3.0-flash",
             "gemini-2.5-pro",
             "gemini-flash-latest"
         ]
-        
-        # Tự động quét thêm các model khả dụng thực tế trong tài khoản API của bạn
         try:
             for m in client.models.list():
                 m_name = m.name.replace("models/", "")
@@ -85,7 +77,7 @@ def analyze_art_prompt(image: Image.Image, api_key: str) -> str:
                 )
                 if response and response.text:
                     st.success(f"✅ Đã phân tích ảnh thành công bằng model: `{model_name}`!")
-                    return response.text
+                    return response.text.strip()
             except Exception as e:
                 err_code = getattr(e, "code", getattr(e, "status_code", "Unknown"))
                 err_msg = getattr(e, "message", str(e))
@@ -100,33 +92,93 @@ def analyze_art_prompt(image: Image.Image, api_key: str) -> str:
         "isolated flat graphic on solid white background, crisp edges, print-ready t-shirt art"
     )
 
-    # 3. CHẾ ĐỘ DỰ PHÒNG (FALLBACK): Nếu Gemini lỗi hoặc quên nhập Key, tự dùng AI miễn phí trên Cloud
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-        rgb_img.save(tmp.name, format="JPEG", quality=90)
+# --- 2. HÀM VẼ LẠI MẪU MỚI (FLUX AI CLOUD) ---
+def generate_redesign_flux(prompt: str, hf_tok: str) -> Image.Image:
+    if hf_tok:
+        os.environ["HF_TOKEN"] = hf_tok.strip().replace('"', '').replace("'", "")
+        
+    full_prompt = f"{prompt}, isolated t-shirt graphic design, flat 2d vector illustration, solid plain white background, high contrast, clean crisp edges"
+    
+    client = Client("black-forest-labs/FLUX.1-schnell")
+    try:
+        result = client.predict(
+            prompt=full_prompt,
+            seed=0,
+            randomize_seed=True,
+            width=1024,
+            height=1216,
+            num_inference_steps=4,
+            api_name="/infer"
+        )
+    except Exception:
+        # Dự phòng nếu Space đổi tên api_name thì gọi tự động qua fn_index=0
+        result = client.predict(
+            full_prompt, 0, True, 1024, 1216, 4, fn_index=0
+        )
+        
+    img_path = result[0] if isinstance(result, (list, tuple)) else result
+    if isinstance(img_path, dict) and "path" in img_path:
+        img_path = img_path["path"]
+    return Image.open(img_path).convert("RGBA")
+
+# --- 3. HÀM TÁCH NỀN SẠCH CHI TIẾT ---
+@st.cache_resource
+def get_rembg_session():
+    return new_session("isnet-general-use")
+
+def remove_background_smart(image: Image.Image, hf_tok: str) -> Image.Image:
+    # Ưu tiên 1: Nếu môi trường có cài rembg thì chạy trực tiếp siêu nhanh
+    if HAS_REMBG:
+        session = get_rembg_session()
+        return rembg_remove(image, session=session)
+        
+    # Ưu tiên 2: Gọi qua Cloud
+    if hf_tok:
+        os.environ["HF_TOKEN"] = hf_tok.strip().replace('"', '').replace("'", "")
+        
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        image.save(tmp.name)
         tmp_path = tmp.name
         
     try:
-        # Gọi model đọc Prompt chuyên dụng cho Flux/Midjourney trên Hugging Face
-        caption_client = Client("fancyfeast/joy-caption-alpha-two")
-        res = caption_client.predict(
-            handle_file(tmp_path),
-            "Descriptive",
-            "long",
-            fn_index=0
-        )
-        caption_text = res[-1] if isinstance(res, (list, tuple)) else str(res)
-        return f"{caption_text}, isolated t-shirt graphic design, flat vector illustration, solid white background, print-ready"
-    except Exception:
-        # Nếu server dự phòng cũng bận, trả về mẫu Prompt khung chuẩn để người dùng tự điền từ khóa
-        st.info("💡 Hãy kiểm tra lại mã Gemini API Key (bắt đầu bằng AIza...) tại aistudio.google.com. Tạm thời hệ thống tạo sẵn khung Prompt chuẩn bên dưới để bạn điền chủ đề:")
-        return (
-            "Vintage bootleg rap tee graphic design, bold retro typography at top and bottom, "
-            "central character collage illustration, vibrant neon green lighting effects, "
-            "isolated flat graphic on solid white background, crisp edges, print-ready t-shirt art"
-        )
+        # Thử Space KenjieDec/RemBG (Truyền đúng thứ tự hoặc tự dò)
+        for args in [
+            (handle_file(tmp_path), "birefnet-general"),
+            ("birefnet-general", handle_file(tmp_path))
+        ]:
+            try:
+                client = Client("KenjieDec/RemBG")
+                res = client.predict(*args, fn_index=0)
+                out_path = res[0] if isinstance(res, (list, tuple)) else res
+                if isinstance(out_path, dict) and "path" in out_path:
+                    out_path = out_path["path"]
+                return Image.open(out_path).convert("RGBA")
+            except Exception:
+                continue
+
+        # Thử các Space tách nền 1 tham số
+        for sp in ["not-lain/background-removal", "briaai/BRIA-RMBG-1.4"]:
+            try:
+                client = Client(sp)
+                info = client.view_api(return_format="dict")
+                for ep in info.get("named_endpoints", {}).keys():
+                    try:
+                        res = client.predict(handle_file(tmp_path), api_name=ep)
+                        out_path = res[-1] if isinstance(res, (list, tuple)) else res
+                        if isinstance(out_path, dict) and "path" in out_path:
+                            out_path = out_path["path"]
+                        return Image.open(out_path).convert("RGBA")
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+        raise Exception("Server tách nền Cloud đang bận. Bạn hãy thêm dòng 'rembg' và 'onnxruntime' vào file requirements.txt trên GitHub để tách nền trực tiếp không bao giờ lỗi!")
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+# --- 4. HÀM CHUẨN HÓA KHUNG IN 4200x4800 PX (300 DPI) ---
 def standardize_pod_canvas(img: Image.Image, target_w=4200, target_h=4800, pad=150, top_chest=True) -> Image.Image:
     img = img.convert("RGBA")
     alpha = img.split()[3]
@@ -155,6 +207,7 @@ def standardize_pod_canvas(img: Image.Image, target_w=4200, target_h=4800, pad=1
     canvas.paste(resized_art, (pos_x, pos_y), resized_art)
     return canvas
 
+# --- GIAO DIỆN CHÍNH (MAIN UI) ---
 col1, col2 = st.columns([1, 1])
 
 if "current_art" not in st.session_state:
@@ -183,15 +236,18 @@ with col1:
                     with st.spinner("Đang phân tích cấu trúc thiết kế và trích xuất Prompt..."):
                         st.session_state.extracted_prompt = analyze_art_prompt(source_img, gemini_key)
                         
-            prompt_text = st.text_area("Chỉnh sửa Prompt để Redesign theo ý bạn:", value=st.session_state.extracted_prompt, height=130)
+            prompt_text = st.text_area("Chỉnh sửa Prompt để Redesign theo ý bạn:", value=st.session_state.extracted_prompt, height=150)
             
             if st.button("🎨 2. Tạo mẫu Redesign mới (FLUX AI)"):
                 if not prompt_text:
                     st.warning("Hãy bấm đọc Prompt hoặc tự nhập Prompt trước!")
                 else:
                     with st.spinner("Đang vẽ lại thiết kế trên GPU đám mây (khoảng 10-15 giây)..."):
-                        st.session_state.current_art = generate_redesign_flux(prompt_text, hf_token)
-                        st.success("Đã tạo xong mẫu Redesign!")
+                        try:
+                            st.session_state.current_art = generate_redesign_flux(prompt_text, hf_token)
+                            st.success("🎉 Đã tạo xong mẫu Redesign! Hãy nhìn sang Cột 2 bên phải.")
+                        except Exception as e:
+                            st.error(f"Lỗi khi gọi FLUX AI: {e}. Vui lòng kiểm tra lại HuggingFace Token.")
         else:
             st.session_state.current_art = source_img
 
@@ -201,13 +257,13 @@ with col2:
     if st.session_state.current_art is not None:
         st.image(st.session_state.current_art, caption="Thiết kế chuẩn bị đưa vào xử lý in ấn", width=350)
         
-        do_remove_bg = st.checkbox("Tự động tách nền sạch (AI V2.0 - Không lỗi Token)", value=True)
+        do_remove_bg = st.checkbox("Tự động tách nền sạch (AI V2.0)", value=True)
         
         if st.button("⚡ XỬ LÝ TẤT CẢ & XUẤT FILE 4200x4800 PX", type="primary"):
             work_img = st.session_state.current_art
             
             if do_remove_bg:
-                with st.spinner("Đang tách nền chi tiết (Lần đầu chạy sẽ tải model mất khoảng 20 giây)..."):
+                with st.spinner("Đang tách nền chi tiết..."):
                     try:
                         work_img = remove_background_smart(work_img, hf_token)
                     except Exception as e:

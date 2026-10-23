@@ -1,6 +1,5 @@
 streamlit
 Pillow
+numpy
 google-genai
 gradio_client
-rembg
-onnxruntime-gpu

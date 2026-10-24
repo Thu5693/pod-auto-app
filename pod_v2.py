@@ -9,8 +9,8 @@ from google.genai import types
 from gradio_client import Client, handle_file
 
 # --- CẤU HÌNH TRANG WEB ---
-st.set_page_config(page_title="POD Auto Studio V5.5", page_icon="🎯", layout="wide")
-st.title("🎯 [V5.5 PRO] POD Crop, Nắn Thẳng Text, Đồng Nhất Nền, Khung Chuẩn 4200x4800 & Tách Nền")
+st.set_page_config(page_title="POD Auto Studio V5.6", page_icon="🎯", layout="wide")
+st.title("🎯 [V5.6 PRO] POD Crop, Phục Hồi Góc Chữ, Chuẩn Hóa Warp (Arc Upper) & Tách Nền 4200x4800")
 
 # --- THANH BÊN (SIDEBAR) ---
 with st.sidebar:
@@ -75,7 +75,97 @@ def auto_detect_art_box(img: Image.Image):
         )
     return (24, 76, 18, 82)
 
-# --- 2. HÀM ĐỒNG NHẤT MÀU NỀN, NẮN THẲNG TEXT & LÀM NÉT CHUẨN ---
+# --- 2. BỘ XỬ LÝ HÌNH HỌC: XÓA RÁC MÉP MOCKUP, MỞ RỘNG GÓC CHỮ & NẮN WARP ARC UPPER ---
+def clean_mockup_border_artifacts(img: Image.Image, bg_rgb: np.ndarray, strip_pct: float = 0.035) -> Image.Image:
+    """
+    Loại bỏ các vệt rác lọt vào sát mép ảnh mockup (như lọn tóc người mẫu ở sát mép trái chữ M
+    hoặc nếp gấp áo trắng sát mép phải chữ D) bằng cách lọc dải biên ngoài cùng.
+    """
+    if strip_pct <= 0:
+        return img
+    arr = np.array(img.convert("RGB"), dtype=np.float32)
+    h, w, _ = arr.shape
+    margin_w = int(w * strip_pct)
+    
+    # Tại vùng dải biên trái/phải (3.5% chiều rộng), những điểm có tông màu da/tóc nâu vàng hoặc vệt xám mờ
+    # không mang màu xanh lá/trắng sáng của viền chữ sẽ được tô đồng nhất về màu nền
+    for x_range in [range(0, margin_w), range(w - margin_w, w)]:
+        sub = arr[:, x_range, :]
+        r, g, b = sub[:, :, 0], sub[:, :, 1], sub[:, :, 2]
+        # Giữ lại những điểm ảnh thuộc chữ (màu xanh lá rực G > R + 15 hoặc viền trắng sáng R,G,B > 200)
+        is_text_pixel = (g > r + 15) | ((r > 195) & (g > 195) & (b > 195))
+        for c in range(3):
+            sub[:, :, c] = np.where(is_text_pixel, sub[:, :, c], bg_rgb[c])
+        arr[:, x_range, :] = sub
+        
+    return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), mode="RGB")
+
+def apply_text_warp_correction(
+    img: Image.Image, 
+    bg_rgb: np.ndarray, 
+    bottom_arc_upper_strength: float = 0.22,
+    top_straighten_strength: float = 0.08
+) -> Image.Image:
+    """
+    Biến đổi lưới tọa độ (Mesh Displacement Warp) chuyên dụng cho POD:
+    - Khắc phục hiện tượng chữ dưới ('MACDONALD') bị võng bụng áo, đẩy phần giữa vòm lên chuẩn 'Warp: Arc Upper'
+      và nắn phẳng đường chân chữ.
+    - Bù đắp độ vòm nhẹ ở góc trên để chữ 'MIKE' cân đối hoàn hảo trong khung chữ nhật.
+    """
+    if abs(bottom_arc_upper_strength) < 0.01 and abs(top_straighten_strength) < 0.01:
+        return img
+
+    arr = np.array(img.convert("RGB"), dtype=np.float32)
+    h, w, _ = arr.shape
+    
+    # Thêm khoảng đệm trên/dưới và trái/phải để khi kéo vòm không bị lẹm mất chữ
+    pad_y = int(h * 0.05)
+    pad_x = int(w * 0.03)
+    padded = np.zeros((h + pad_y * 2, w + pad_x * 2, 3), dtype=np.float32)
+    padded[:, :, :] = bg_rgb.reshape((1, 1, 3))
+    padded[pad_y:pad_y + h, pad_x:pad_x + w, :] = arr
+    
+    ph, pw, _ = padded.shape
+    out_arr = np.zeros_like(padded)
+    out_arr[:, :, :] = bg_rgb.reshape((1, 1, 3))
+    
+    # Tính hệ số parabol theo chiều ngang: norm_x chạy từ -1 (mép trái) -> 0 (chính giữa) -> +1 (mép phải)
+    x_coords = np.arange(pw, dtype=np.float32)
+    norm_x = (x_coords - (pw / 2.0)) / (pw / 2.0)
+    # Đường cong vòm (1 - x^2): đạt cực đại = 1 tại tâm (x=0) và = 0 tại 2 mép
+    arch_profile = np.clip(1.0 - (norm_x ** 2), 0.0, 1.0)
+    
+    y_coords = np.arange(ph, dtype=np.float32)[:, np.newaxis]
+    
+    # 1. Vùng chữ dưới (từ 65% đến 100% chiều cao ảnh):
+    # Trên áo mẫu, phần giữa chữ MACDONALD bị sụp xuống dưới. Để đẩy tâm chữ vòm lên chuẩn Arc Upper,
+    # tại tâm (arch_profile=1), ta lấy điểm ảnh từ phía dưới kéo dịch lên trên (tức là cộng thêm delta_y vào tọa độ nguồn).
+    bottom_zone_weight = np.clip((y_coords - ph * 0.62) / (ph * 0.32), 0.0, 1.0)
+    # Hiệu ứng Arc Upper: kéo đỉnh vòm phần chữ dưới lên cao hơn ở chính giữa
+    max_shift_bottom = ph * 0.085 * bottom_arc_upper_strength
+    shift_bottom = bottom_zone_weight * (arch_profile[np.newaxis, :] * max_shift_bottom)
+    
+    # 2. Vùng chữ trên (từ 0% đến 32% chiều cao ảnh - chữ MIKE):
+    # Cân bằng lại đường ngang của chữ MIKE nếu hai góc bị sụp
+    top_zone_weight = np.clip((ph * 0.32 - y_coords) / (ph * 0.32), 0.0, 1.0)
+    max_shift_top = ph * 0.05 * top_straighten_strength
+    shift_top = -top_zone_weight * ((1.0 - arch_profile[np.newaxis, :]) * max_shift_top)
+    
+    total_src_y = y_coords + shift_bottom + shift_top
+    
+    # Nội suy tuyến tính (Bilinear Vertical Interpolation) để chữ sau khi uốn vòm mượt tuyệt đối không bị răng cưa
+    y0 = np.floor(total_src_y).astype(np.int32)
+    y1 = y0 + 1
+    wy = (total_src_y - y0)[:, :, np.newaxis]
+    
+    y0_clip = np.clip(y0, 0, ph - 1)
+    y1_clip = np.clip(y1, 0, ph - 1)
+    x_idx = np.arange(pw, dtype=np.int32)[np.newaxis, :]
+    
+    warped = (1.0 - wy) * padded[y0_clip, x_idx] + wy * padded[y1_clip, x_idx]
+    return Image.fromarray(np.clip(warped, 0, 255).astype(np.uint8), mode="RGB")
+
+# --- 3. HÀM ĐỒNG NHẤT MÀU NỀN, PHỤC HỒI CHỮ BỊ CẮT GÓC & LÀM NÉT ---
 def unify_background_solid_color(
     image: Image.Image, 
     target_bg_rgb: np.ndarray, 
@@ -114,30 +204,50 @@ def remaster_and_unify_art(
     hf_tok: str, 
     target_bg_rgb: np.ndarray,
     bg_tolerance: int = 38,
+    arc_strength: float = 0.22,
+    clean_border: bool = True,
     custom_edit: str = ""
 ) -> Image.Image:
     rgb_img = cropped_img.convert("RGB")
+    orig_bg = detect_dominant_bg_color(np.array(rgb_img, dtype=np.float32))
+    
+    # Bước A: Xóa lọn tóc/rác mockup ở sát mép trái chữ M và mép phải chữ D
+    if clean_border:
+        rgb_img = clean_mockup_border_artifacts(rgb_img, orig_bg, strip_pct=0.04)
+        
+    # Bước B: Áp dụng nắn khung hình học Warp (Arc Upper cho chữ dưới & cân đối chữ trên)
+    rgb_img = apply_text_warp_correction(rgb_img, orig_bg, bottom_arc_upper_strength=arc_strength, top_straighten_strength=0.1)
+
     target_hex = rgb_to_hex(target_bg_rgb)
     clean_key = api_key.strip().replace('"', '').replace("'", "") if api_key else ""
-    
     enhanced_img = None
     
+    # Bước C: Tự động tìm đúng Model tạo/chỉnh sửa ảnh đang mở trên tài khoản Gemini của người dùng
     if clean_key:
         client = genai.Client(api_key=clean_key)
-        edit_instruction = f" Also apply this specific adjustment: {custom_edit}." if custom_edit.strip() else " Keep the exact same typography and font."
+        edit_instruction = f" Also apply this specific adjustment: {custom_edit}." if custom_edit.strip() else ""
         
-        # Bổ sung câu lệnh yêu cầu AI nắn thẳng chữ, căn chỉnh đối xứng và đóng khung chữ nhật chuẩn
         remaster_prompt = (
-            f"Remaster, straighten, and perfectly align this cropped t-shirt graphic into an ultra-crisp, high-resolution, print-ready 2D digital illustration "
+            f"Remaster, complete, and upscale this t-shirt graphic into an ultra-crisp, high-resolution, print-ready 2D graphic "
             f"isolated on a completely flat, solid uniform background of exact hex color {target_hex}. "
-            "CRITICAL RULES: "
-            "1. Straighten all warped, curved, or tilted text and art elements so everything is geometrically straight, balanced, and horizontally aligned. "
-            "2. Preserve the EXACT original artwork, character details, line art, effects, composition, and EXACT original color palette. "
-            f"3. Make the background 100% solid uniform {target_hex} with zero fabric texture, zero wrinkles, and razor-sharp clean edges inside a rectangular canvas."
+            "CRITICAL INSTRUCTIONS: "
+            "1. COMPLETE CLIPPED LETTERS: If any letter at the corners/edges is slightly cut off or clipped by the crop (such as the top-left corner of the letter 'M' in 'MIKE' or the edge of 'D' in 'MACDONALD'), reconstruct and complete the missing stroke/serif seamlessly so every letter is 100% whole and intact. "
+            "2. TEXT WARP & ALIGNMENT: Ensure the top text ('MIKE') is straight and bold, and the bottom text ('MACDONALD') has a clean, symmetrical 'Arc Upper' warp (flat horizontal bottom baseline, arched top contour). "
+            "3. REMOVE ARTIFACTS: Remove any stray hair or mockup fabric at the left/right edges. Preserve the exact faces, clothing, colors, and lighting effects."
             f"{edit_instruction}"
         )
         
-        for m_name in ["gemini-2.5-flash-image-preview", "gemini-2.0-flash-exp-image-generation", "gemini-2.0-flash-exp", "gemini-3.8-flash"]:
+        # Tự động quét các model hỗ trợ sinh ảnh trong tài khoản
+        candidate_img_models = ["gemini-2.5-flash-image-preview", "gemini-2.0-flash-exp-image-generation", "gemini-3.8-flash"]
+        try:
+            for m in client.models.list():
+                m_name = m.name.replace("models/", "")
+                if ("image" in m_name or "flash" in m_name) and m_name not in candidate_img_models:
+                    candidate_img_models.insert(0, m_name)
+        except Exception:
+            pass
+
+        for m_name in candidate_img_models:
             try:
                 response = client.models.generate_content(
                     model=m_name,
@@ -147,12 +257,14 @@ def remaster_and_unify_art(
                 for part in response.candidates[0].content.parts:
                     if part.inline_data is not None:
                         enhanced_img = Image.open(io.BytesIO(part.inline_data.data)).convert("RGBA")
+                        st.success(f"✨ Đã phục hồi góc chữ bị cắt & căn chuẩn Warp bằng AI ({m_name})!")
                         break
                 if enhanced_img is not None:
                     break
             except Exception:
                 continue
 
+    # Bước D: Nếu tài khoản Gemini chỉ hỗ trợ đọc chữ (không mở quyền xuất ảnh), dùng GPU Real-ESRGAN làm nét 4K bức ảnh đã được nắn Warp
     if enhanced_img is None:
         if hf_tok:
             os.environ["HF_TOKEN"] = hf_tok.strip().replace('"', '').replace("'", "")
@@ -168,6 +280,7 @@ def remaster_and_unify_art(
                     if isinstance(out_p, dict) and "path" in out_p:
                         out_p = out_p["path"]
                     enhanced_img = Image.open(out_p).convert("RGBA")
+                    st.success(f"✨ Đã nắn chuẩn Warp Arc Upper, xóa rác mép & Upscale 4K qua GPU {sp}!")
                     break
                 except Exception:
                     continue
@@ -184,7 +297,7 @@ def remaster_and_unify_art(
     final_step2_img = unify_background_solid_color(enhanced_img, target_bg_rgb, bg_tolerance=bg_tolerance)
     return final_step2_img
 
-# --- 3. HÀM CHUẨN HÓA KHUNG 4200x4800 CÓ MÀU NỀN ĐỒNG NHẤT ---
+# --- 4. HÀM CHUẨN HÓA KHUNG 4200x4800 CÓ MÀU NỀN ĐỒNG NHẤT ---
 def standardize_solid_bg_canvas(
     img: Image.Image, 
     bg_rgb: np.ndarray, 
@@ -227,7 +340,7 @@ def standardize_solid_bg_canvas(
     canvas.paste(resized_art, (pos_x, pos_y))
     return canvas
 
-# --- 4. CÔNG NGHỆ TÁCH NỀN TRONG SUỐT V5.5 ---
+# --- 5. CÔNG NGHỆ TÁCH NỀN TRONG SUỐT V5.6 ---
 def universal_clean_knockout_v5(
     image: Image.Image,
     bg_rgb: np.ndarray,
@@ -320,14 +433,14 @@ def standardize_pod_canvas(img: Image.Image, target_w=4200, target_h=4800, pad=1
     canvas.paste(resized_art, (pos_x, pos_y), resized_art)
     return canvas
 
-# --- 5. HÀM ĐỌC PROMPT & REDESIGN MẪU MỚI ---
+# --- 6. HÀM ĐỌC PROMPT & REDESIGN MẪU MỚI ---
 def analyze_art_prompt(image: Image.Image, api_key: str) -> str:
     rgb_img = image.convert("RGB")
     rgb_img.thumbnail((1024, 1024))
     sys_prompt = (
         "Analyze this cropped T-shirt graphic design carefully. Write ONLY the raw English image generation prompt "
-        "to recreate this exact illustration style, subject, floral elements, color palette, and text layout "
-        "isolated on a solid flat background, crisp vector-like edges, print-ready graphic art."
+        "to recreate this exact illustration style, subject, typography warp (such as top straight bold text and bottom Arc Upper warped text), "
+        "color palette, and layout isolated on a solid flat background, crisp vector-like edges, print-ready graphic art."
     )
     clean_key = api_key.strip().replace('"', '').replace("'", "") if api_key else ""
     if clean_key:
@@ -339,12 +452,12 @@ def analyze_art_prompt(image: Image.Image, api_key: str) -> str:
                     return response.text.strip()
             except Exception:
                 continue
-    return "Vintage illustration of a skeleton girl with floral crown reading a book surrounded by wildflowers, sun, and butterflies, text 'JUST A GIRL WHO LOVES BOOKS' at bottom, isolated on solid background"
+    return "Vintage bootleg rap tee graphic design, complete unclipped bold typography at top and Arc Upper warped typography at bottom, central character collage, neon green lighting effects, isolated on solid background"
 
 def generate_redesign_flux(prompt: str, hf_tok: str) -> Image.Image:
     if hf_tok:
         os.environ["HF_TOKEN"] = hf_tok.strip().replace('"', '').replace("'", "")
-    full_prompt = f"{prompt}, isolated t-shirt graphic art, solid plain background, crisp clean edges, original vintage color palette"
+    full_prompt = f"{prompt}, isolated t-shirt graphic art, complete unclipped letters with generous margin, solid plain background, crisp clean edges"
     client = Client("black-forest-labs/FLUX.1-schnell")
     try:
         result = client.predict(prompt=full_prompt, seed=0, randomize_seed=True, width=1024, height=1216, num_inference_steps=4, api_name="/infer")
@@ -415,12 +528,12 @@ with col1:
             st.image(cropped_art, caption=f"Vùng Art sau khi Crop ({cropped_art.width}x{cropped_art.height}px)", use_container_width=True)
             
         st.divider()
-        st.subheader("✨ Bước 2: Nắn Thẳng Text, Làm Nét, Đồng Nhất Nền & Xuất 4200x4800")
+        st.subheader("✨ Bước 2: Phục Hồi Góc Chữ, Căn Chuẩn Warp (Arc Upper) & Đồng Nhất Nền")
         
         orig_crop_bg = detect_dominant_bg_color(np.array(cropped_art.convert("RGB"), dtype=np.float32))
         orig_crop_hex = rgb_to_hex(orig_crop_bg)
         
-        st.markdown("##### 🎨 Tùy chọn màu nền đồng nhất cho Bước 2:")
+        st.markdown("##### 🎨 1. Tùy chọn màu nền đồng nhất cho Bước 2:")
         bg_choice_col1, bg_choice_col2 = st.columns([2.2, 1.0])
         with bg_choice_col1:
             step2_bg_option = st.radio(
@@ -451,24 +564,39 @@ with col1:
                 
         step2_bg_rgb = hex_to_rgb(chosen_step2_hex)
         
-        step2_tol = st.slider(
-            "Độ nhạy nhận diện nền áo cũ để thay sang nền đồng nhất:", 
-            15, 80, 38, 
-            help="Giúp làm phẳng hoàn toàn phần nền vải nhăn về đúng 1 mã màu đồng nhất mà không ảnh hưởng đến Art"
+        st.markdown("##### 📐 2. Căn chỉnh Text Warp (Arc Upper) & Xóa rác mép Mockup:")
+        w_col1, w_col2 = st.columns(2)
+        with w_col1:
+            arc_val = st.slider(
+                "Độ cong vòm chữ dưới (Warp - Arc Upper):", 
+                -0.30, 0.60, 0.24, step=0.02,
+                help="Khắc phục chữ dưới (như MACDONALD) bị võng bụng áo, đẩy vòm chữ cong lên chuẩn Arc Upper và làm phẳng đáy chữ"
+            )
+        with w_col2:
+            step2_tol = st.slider(
+                "Độ nhạy nhận diện nền áo cũ:", 
+                15, 80, 38, 
+                help="Làm phẳng phần nền vải nhăn về đúng 1 mã màu đồng nhất"
+            )
+            
+        clean_mockup_edge = st.checkbox(
+            "🧹 Tự động lọc bỏ tóc/vệt vải thừa của Mockup dính ở sát mép trái/phải (Ví dụ: lọn tóc cạnh chữ M)", 
+            value=True
         )
         
         custom_tweak = st.text_input(
-            "Tùy chọn chỉnh sửa nhỏ khi làm nét (Để trống nếu giữ nguyên 100%, hoặc gõ ví dụ: 'Change text font to soft italic serif'):",
+            "Tùy chọn chỉnh sửa thêm cho AI (Để trống nếu giữ nguyên, hoặc gõ yêu cầu cụ thể):",
             value=""
         )
         
         b_col1, b_col2 = st.columns(2)
         with b_col1:
-            if st.button("🪄 1. AI Làm Nét, Nắn Thẳng Text + Đồng Nhất Nền & Xuất", type="primary"):
-                with st.spinner(f"Đang nắn thẳng text, làm nét, đồng nhất nền về màu {chosen_step2_hex} và chuẩn hóa 4200x4800px..."):
+            if st.button("🪄 1. AI Phục Hồi Góc Chữ + Căn Chuẩn Warp & Xuất 4200x4800", type="primary"):
+                with st.spinner(f"Đang phục hồi góc chữ, nắn chuẩn Warp Arc Upper, đồng nhất nền {chosen_step2_hex} và xuất 4200x4800px..."):
                     remastered = remaster_and_unify_art(
                         cropped_art, gemini_key, hf_token, 
-                        target_bg_rgb=step2_bg_rgb, bg_tolerance=step2_tol, custom_edit=custom_tweak
+                        target_bg_rgb=step2_bg_rgb, bg_tolerance=step2_tol, 
+                        arc_strength=arc_val, clean_border=clean_mockup_edge, custom_edit=custom_tweak
                     )
                     st.session_state.current_art = remastered
                     st.session_state.step2_bg_hex = chosen_step2_hex
@@ -487,9 +615,14 @@ with col1:
                     st.session_state.step2_preview_img = prev_s2
                     
         with b_col2:
-            if st.button("➡️ 2. Đồng Nhất Nền & Xuất 4200x4800 Nhanh"):
-                with st.spinner(f"Đang đồng nhất nền về màu {chosen_step2_hex} và xuất khung 4200x4800px..."):
-                    unified_fast = unify_background_solid_color(cropped_art, step2_bg_rgb, bg_tolerance=step2_tol)
+            if st.button("➡️ 2. Căn Chuẩn Warp + Đồng Nhất Nền Nhanh (0.5 giây)"):
+                with st.spinner(f"Đang nắn Warp Arc Upper, xóa rác mép và xuất khung 4200x4800px..."):
+                    work_fast = cropped_art.convert("RGB")
+                    if clean_mockup_edge:
+                        work_fast = clean_mockup_border_artifacts(work_fast, orig_crop_bg, strip_pct=0.04)
+                    work_fast = apply_text_warp_correction(work_fast, orig_crop_bg, bottom_arc_upper_strength=arc_val, top_straighten_strength=0.1)
+                    unified_fast = unify_background_solid_color(work_fast, step2_bg_rgb, bg_tolerance=step2_tol)
+                    
                     st.session_state.current_art = unified_fast
                     st.session_state.step2_bg_hex = chosen_step2_hex
                     
@@ -507,7 +640,7 @@ with col1:
                     st.session_state.step2_preview_img = prev_s2
 
         if st.session_state.step2_solid_4200_bytes is not None and st.session_state.step2_preview_img is not None:
-            st.success(f"✅ Hoàn tất Bước 2! Text đã được nắn thẳng, ảnh làm nét và đưa về nền đồng nhất ({st.session_state.step2_bg_hex}) chuẩn {CANVAS_W}x{CANVAS_H} px!")
+            st.success(f"✅ Hoàn tất Bước 2! Đã căn chuẩn Warp, xử lý góc chữ và đưa về nền đồng nhất ({st.session_state.step2_bg_hex}) chuẩn {CANVAS_W}x{CANVAS_H} px!")
             st.image(
                 st.session_state.step2_preview_img, 
                 caption=f"Kết quả Bước 2: Chưa tách nền - Nền đồng nhất {st.session_state.step2_bg_hex} ({CANVAS_W}x{CANVAS_H} px)", 
@@ -606,7 +739,7 @@ with col2:
             st.image(bg_prev_img, caption=f"Kiểm tra kết quả Bước 3 trên {preview_bg} (File tải về bên dưới là PNG Trong Suốt 4200x4800px)", use_container_width=True)
             
             st.download_button(
-                label="📥 TẢI FILE BƯỚC 3 - PNG TRONG SUỐT ĐÃ TÁCH NỀN (4200x4800 - 300 DPI)",
+                label="📥 TẢI FILE BƯỚC 2/3 - PNG TRONG SUỐT ĐÃ TÁCH NỀN (4200x4800 - 300 DPI)",
                 data=byte_im,
                 file_name="POD_Step3_Transparent_4200x4800.png",
                 mime="image/png"
